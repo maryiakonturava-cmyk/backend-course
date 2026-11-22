@@ -8,8 +8,10 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOptions<RegistrationOptions>()
     .Bind(builder.Configuration.GetSection("Registration"));
+builder.Services.AddOptions<SmtpOptions>()
+    .Bind(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<RegistrationService>();
-builder.Services.AddSingleton<IEmailSender, NullEmailSender>();
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddControllers();
 
 // Add services to the container.

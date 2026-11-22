@@ -11,7 +11,15 @@ public sealed class RegistrationController(RegistrationService registrationServi
     [HttpPost("register")]
     public async Task<IActionResult> Register(RegisterRequest request, CancellationToken ct)
     {
-        var result = await registrationService.RegisterAsync(request.Email, request.Password, ct);
+        RegisterResult result;
+        try
+        {
+            result = await registrationService.RegisterAsync(request.Email, request.Password, ct);
+        }
+        catch (EmailDeliveryException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
 
         return result switch
         {
@@ -21,6 +29,29 @@ public sealed class RegistrationController(RegistrationService registrationServi
                 new ConfirmationRequiredResponse(true, "otp", confirmation.AttemptId, 600, 60)),
             RegisterResult.Conflict => Conflict(),
             _ => throw new InvalidOperationException("Unknown registration result.")
+        };
+    }
+
+    [HttpPost("register/resend")]
+    public async Task<IActionResult> Resend(ResendRequest request, CancellationToken ct)
+    {
+        ResendResult result;
+        try
+        {
+            result = await registrationService.ResendAsync(request.Email, ct);
+        }
+        catch (EmailDeliveryException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        return result switch
+        {
+            ResendResult.Sent sent => Accepted(
+                new ConfirmationRequiredResponse(true, "otp", sent.AttemptId, 600, 60)),
+            ResendResult.TooSoon => StatusCode(StatusCodes.Status429TooManyRequests),
+            ResendResult.NotFound => NotFound(),
+            _ => throw new InvalidOperationException("Unknown resend result.")
         };
     }
 

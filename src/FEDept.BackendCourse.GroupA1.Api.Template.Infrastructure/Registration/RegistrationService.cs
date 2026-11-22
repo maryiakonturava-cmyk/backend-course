@@ -59,7 +59,7 @@ public sealed class RegistrationService(
 
             if (code is not null)
             {
-                await emailSender.SendOtpAsync(normalizedEmail, code, ct);
+                await SendOtpAsync(normalizedEmail, code, ct);
                 return new RegisterResult.ConfirmationRequired(challenge!.Id);
             }
 
@@ -79,6 +79,25 @@ public sealed class RegistrationService(
 
             return RegisterResult.Conflict.Instance;
         }
+    }
+
+    public async Task<ResendResult> ResendAsync(string email, CancellationToken ct)
+    {
+        var normalizedEmail = EmailNormalizer.Normalize(email);
+        var user = await db.Users.SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
+        if (user is null || user.Status != UserStatus.Pending)
+        {
+            return ResendResult.NotFound.Instance;
+        }
+
+        var challenge = await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id, ct);
+        if (DateTimeOffset.UtcNow - challenge.LastSentAt < TimeSpan.FromSeconds(60))
+        {
+            return ResendResult.TooSoon.Instance;
+        }
+
+        var result = await ResendPendingChallengeAsync(user, ct);
+        return new ResendResult.Sent(result.AttemptId);
     }
 
     public async Task<ConfirmResult> ConfirmAsync(Guid attemptId, string code, CancellationToken ct)
@@ -134,8 +153,20 @@ public sealed class RegistrationService(
         challenge.LastSentAt = now;
         challenge.ConsumedAt = null;
         await db.SaveChangesAsync(ct);
-        await emailSender.SendOtpAsync(user.Email, code, ct);
+        await SendOtpAsync(user.Email, code, ct);
         return new RegisterResult.ConfirmationRequired(challenge.Id);
+    }
+
+    private async Task SendOtpAsync(string email, string code, CancellationToken ct)
+    {
+        try
+        {
+            await emailSender.SendOtpAsync(email, code, ct);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new EmailDeliveryException(exception);
+        }
     }
 }
 
@@ -150,6 +181,23 @@ public abstract record RegisterResult
         public static Conflict Instance { get; } = new();
     }
 }
+
+public abstract record ResendResult
+{
+    public sealed record Sent(Guid AttemptId) : ResendResult;
+
+    public sealed record TooSoon : ResendResult
+    {
+        public static TooSoon Instance { get; } = new();
+    }
+
+    public sealed record NotFound : ResendResult
+    {
+        public static NotFound Instance { get; } = new();
+    }
+}
+
+public sealed class EmailDeliveryException(Exception innerException) : Exception("Email delivery failed.", innerException);
 
 public abstract record ConfirmResult
 {
