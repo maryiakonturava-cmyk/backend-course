@@ -217,40 +217,29 @@ path that restarts TTL and the counter.
   too frequent (rate limit).
 - `503` email not sent (`pending` row + challenge kept).
 
-### Decision: neutral taken-email response (user choice)
+### Decision: explicit 409 for taken email (user choice, SUPERSEDES the earlier neutral-response decision)
 
-Instead of an explicit `409`, register returns a neutral `202`
-confirmation-required response from which the caller cannot tell whether
-the email is taken. Resend returns the **identical** shape for the same
-case. The response carries no existing-account signal: a real
-`attemptId`, `method: otp`, `expiresInSeconds: 600`, `resendAfterSeconds:
-60`, and never an existing account's identity or the `201` active body.
+**2026-11-22 — reversed.** The earlier build chose a neutral `202` for a
+taken email (with decoy challenges so `confirm` stayed indistinguishable).
+The user has since switched to the spec's **default `409`**: a taken email
+returns an explicit `409 Conflict`, the plain "email already registered"
+error from §1.4.
 
-The neutrality must survive the `confirm` path, not just the register
-response (builder finding #1): a placeholder id that dies at `confirm`
-would re-leak existence. So the `attemptId` returned is **always a real,
-persisted challenge**, and `confirm` cannot tell the cases apart:
+Consequences:
+- **Register on a taken email — active OR pending — returns `409`.** No
+  neutral response, no decoy challenge. The decoy mechanism is removed.
+- **A repeat register on a `pending` account returns `409` too** — it does
+  **not** send a fresh code. The only way to get a new code for a pending
+  account is `POST /auth/register/resend`. (User decision: variant A.)
+- The **timing side channel** from the decoy path disappears with the
+  decoy: there is no second same-shape branch to equalize.
+- Account enumeration is now possible by design (a `409` reveals the email
+  is taken). This is the accepted trade-off of the `409` variant, which
+  §1.4 explicitly allows as the default.
 
-- **Unknown email, or active account:** create/return a **persisted
-  decoy** `registration_challenges` row whose `secret_hash` matches no
-  derivable code, so `confirm` with its id fails **identically to a
-  wrong code** (`400`, counter behaves the same). No email is sent for
-  an active account. (User decision: persisted dummy challenge.)
-- **Pending account:** this is the real owner mid-confirmation. Register
-  and resend **send a fresh, working OTP** to that owner — restart TTL,
-  zero `attempts`, replace `secret_hash` on the existing challenge — and
-  return that account's **real** `attemptId`. The owner can confirm.
-  (User decision: send a real working OTP.)
-
-Result: every neutral response points at a real challenge; `confirm`
-behaves identically for decoy and genuine-but-wrong-code attempts; the
-legitimate pending owner is never starved. Anti-goal ("taken-email
-response differing ... would leak account existence") holds across
-register, resend, **and** confirm.
-
-Decoy rows are a write-amplification/spam vector: capped behind the
-registration + resend rate limiter (below) and reaped by the challenge
-TTL (`expires_at`), same as any other challenge.
+`resend` still sends a real working OTP for a `pending` account (restart
+TTL, zero `attempts`, replace `secret_hash` on the existing challenge).
+What `resend` returns for an unknown/active email is covered in its task.
 
 ### Rate limiting (task §1.6)
 

@@ -196,6 +196,8 @@ public sealed class MigrationTests(RegistrationTestFactory factory) : IClassFixt
 
 - [ ] **Step 1: Failing tests** `ConfirmEndpointTests` (confirmation **on**; capture the code via a test `IEmailSender`):
   - register-on → 202, then confirm with the captured code → **200** `status active`; user row now `Active`.
+  - register-on creates exactly one `pending` user **and one open (unconsumed) challenge** (`ConsumedAt == null`, `Attempts == 0`).
+  - **second register-on for the same email → neutral 202 (same shape as a taken active account), and it does NOT create a second user or a second open challenge.** The email is taken from the moment the `pending` row exists, so a repeat register is the taken-email case, identical to re-registering an active account. (Task text correction.)
   - wrong code → **400**, `attempts` incremented.
   - 5 wrong then the correct code → **429** exhausted; attempt consumed on the 5th wrong. (Review Focus.)
   - expired attempt (fast-forward `ExpiresAt`) → **400**, `attempts` not incremented. (Review Focus.)
@@ -203,7 +205,7 @@ public sealed class MigrationTests(RegistrationTestFactory factory) : IClassFixt
 
 - [ ] **Step 2: Run to verify fail.**
 
-- [ ] **Step 3: Implement.** Pending path in `RegisterAsync`: insert `pending` user + one `RegistrationChallenge` (method `Otp`, `SecretHash` of a generated code, `ExpiresAt = now+600s`, `Attempts=0`, `LastSentAt=now`), call `IEmailSender.SendOtpAsync`, return `ConfirmationRequired(attemptId)`. `ConfirmAsync`: load attempt; missing/consumed → `Invalid`; expired → `Invalid` (no counter bump); compare HMAC — mismatch → bump `attempts`, if now ≥5 set `ConsumedAt` and return `Exhausted` else `Invalid`; match → in one transaction set user `Active`, set `ConsumedAt`, (RBAC role seam: no-op while absent — `// shortcut: assign user role here once RBAC module exists`), return `Success`. Controller maps `Invalid→400`, `Exhausted→429`, `Success→200`.
+- [ ] **Step 3: Implement.** Pending path in `RegisterAsync` (confirmation on, **new** email): insert `pending` user + one open `RegistrationChallenge` (method `Otp`, `SecretHash` of a generated code, `ExpiresAt = now+600s`, `Attempts=0`, `LastSentAt=now`), call `IEmailSender.SendOtpAsync`, return `ConfirmationRequired(attemptId)`. **Taken email (existing `pending` or `active`) under confirmation-on → the existing neutral branch (Task 3 placeholder, completed in Task 6): no second user, no second challenge, neutral 202.** The duplicate-pending case thus returns the same response as a duplicate active account. `ConfirmAsync`: load attempt; missing/consumed → `Invalid`; expired → `Invalid` (no counter bump); compare HMAC — mismatch → bump `attempts`, if now ≥5 set `ConsumedAt` and return `Exhausted` else `Invalid`; match → in one transaction set user `Active`, set `ConsumedAt`, (RBAC role seam: no-op while absent — `// shortcut: assign user role here once RBAC module exists`), return `Success`. Controller maps `Invalid→400`, `Exhausted→429`, `Success→200`.
 
 - [ ] **Step 4: Run to verify pass.**
 
@@ -294,3 +296,68 @@ public sealed class MigrationTests(RegistrationTestFactory factory) : IClassFixt
 - [ ] **Step 4: Run to verify pass.** Also run full `dotnet test` + `dotnet format … --verify-no-changes`.
 
 - [ ] **Step 5: Commit** — `feat: rate limiting, audit logging, OpenAPI for registration`
+
+---
+
+### Task 9: Switch taken-email to explicit 409 (remove decoy / neutral response)
+
+**Supersedes Task 6.** The project switched from the neutral-202 taken-email
+response to the spec's default **409 Conflict** (design doc decision block,
+reversed 2026-11-22). Variant A: a taken email — **active OR pending** —
+always returns `409`; a repeat register sends **no** code; a new code for a
+pending account comes only from `POST /auth/register/resend`. Run this
+**before** Task 7 so resend builds on the 409 register model.
+
+**Files:**
+- Modify: `src/…Infrastructure/Registration/RegistrationService.cs`
+- Modify: `src/…Api/Controllers/RegistrationController.cs`
+- Modify/Delete tests: `tests/…Tests/NeutralResponseTests.cs` (delete), `RegisterEndpointTests.cs`, `ConfirmEndpointTests.cs`
+
+**Interfaces:**
+- Consumes: Tasks 3–6 service/controller.
+- Produces: `RegisterResult.Conflict` (new case) → controller maps to **409**. `ResendPendingChallengeAsync` stays as a private helper for Task 7's resend only (no longer called from register).
+
+- [ ] **Step 1: Failing tests.** Replace neutral assertions with 409:
+  - register on an **active** email → **409** (not 202, not the active body).
+  - register on a **pending** email → **409**, and **no** email is sent (assert the capturing fake `IEmailSender` received nothing), and the pending challenge is unchanged (same `SecretHash`, `Attempts`, `ExpiresAt`).
+  - concurrent duplicate (two parallel POSTs, same email) → exactly one success, the other **409**, neither 500.
+  - delete `NeutralResponseTests.cs` (decoy behavior no longer exists).
+
+- [ ] **Step 2: Run to verify fail.**
+
+- [ ] **Step 3: Implement.** Add `RegisterResult.Conflict`. In `RegisterAsync`, the existing-user branch and the `DbUpdateException` unique-violation branch both return `Conflict` (no `NeutralResultAsync`, no decoy insert). Remove `NeutralResultAsync` and the decoy code; keep `ResendPendingChallengeAsync` private for Task 7. Controller maps `Conflict → 409` (`Results/Problem` or `Conflict()`), body is the plain error, no account identity.
+
+- [ ] **Step 4: Run to verify pass.** Full `dotnet test` + `dotnet format … --verify-no-changes`.
+
+- [ ] **Step 5: Commit** — `feat: return 409 for taken email, remove decoy/neutral response`
+
+---
+
+## Confirm & resend logic/steps (contract §1.3.2 — binds Tasks 5 and 7)
+
+The authoritative confirm + resend steps from the source task. Task 5 owns
+`confirm`; Task 7 owns `resend`. Every task that touches these flows must
+match this.
+
+**Логика/шаги (confirm):**
+1. Find the attempt and check it is not yet consumed. If the attempt is
+   not found or already consumed, the response is the same as for a wrong
+   code (→ 400).
+2. Reject an expired attempt **without** incrementing the input counter
+   (→ 400).
+3. Compare the secret. The code/token are stored in a non-recoverable form
+   (HMAC). If the code does not match, the attempts counter is incremented.
+4. On success, move the user to active, assign the `user` role **if** the
+   RBAC module is connected and the role is not yet assigned (no-op seam
+   while RBAC absent), and consume the attempt — all in one transaction.
+
+**Ответы:**
+- **Success confirm:** **200 OK**, `id`, `email`, `status: active`.
+- **Success resend:** **202 Accepted**, `confirmationRequired: true`,
+  `method`, `attemptId`, `expiresInSeconds: 600`, `resendAfterSeconds: 60`.
+  The secret is **absent** from the response.
+- **Errors:** see §1.4 (400 wrong/expired/not-found/consumed; 429 exhausted
+  / resend < 60 s / too-frequent; 503 email not sent).
+
+This matches the Task 5 confirm state machine and the Task 7 resend rules
+already specified above; it is the verbatim contract they implement.
