@@ -1,0 +1,309 @@
+openapi: 3.1.1
+info:
+  title: Registration API
+  version: 1.0.0
+  description: >-
+    HTTP contract for the application's health and account-registration endpoints.
+    Registration confirmation is controlled by server configuration.
+servers:
+  - url: http://localhost:{port}
+    description: Local development API
+    variables:
+      port:
+        default: '5117'
+        description: Set to the Docker Compose API_PORT value when overriding the default.
+tags:
+  - name: Health
+  - name: Registration
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Check API health
+      responses:
+        '200':
+          description: API is running. Response has no body.
+  /auth/register:
+    post:
+      tags: [Registration]
+      operationId: register
+      summary: Register an account
+      description: >-
+        Creates an active account when confirmation is disabled, or a pending account
+        and sends an OTP when confirmation is enabled. A duplicate email returns
+        409 without account details. The default rate limit is 5 requests per client
+        IP per minute; server configuration can change the permit count.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              email: user@example.com
+              password: abc12345
+      responses:
+        '201':
+          description: Account created and active; returned only when confirmation is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+              example:
+                id: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
+                email: user@example.com
+                status: active
+        '202':
+          description: Confirmation is required; OTP was sent to the supplied email address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmationRequiredResponse'
+              example:
+                confirmationRequired: true
+                method: otp
+                attemptId: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
+                expiresInSeconds: 600
+                resendAfterSeconds: 60
+        '400':
+          $ref: '#/components/responses/ValidationError'
+          description: Некорректный email или пароль не проходит политику.
+        '409':
+          description: Email уже зарегистрирован или ожидает подтверждения.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.10
+                title: Conflict
+                status: 409
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Письмо не отправлено. Запись pending и попытка подтверждения сохранены.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /auth/register/resend:
+    post:
+      tags: [Registration]
+      operationId: resendRegistrationCode
+      summary: Resend registration OTP
+      description: >-
+        Sends a new OTP for a pending account. A successful resend resets the code's
+        expiry to 600 seconds and its failed-confirmation count to zero. The default
+        rate limit is 5 requests per client IP per minute; the per-email resend
+        cooldown is 60 seconds. Server configuration can change the permit count.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendRequest'
+            example:
+              email: user@example.com
+      responses:
+        '202':
+          description: New OTP was sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmationRequiredResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+          description: Некорректный email.
+        '404':
+          description: Ожидающая регистрация для этого email не найдена.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: >-
+            Повторная отправка раньше чем через 60 секунд или слишком частая регистрация.
+            Ответ по cooldown содержит ProblemDetails; отказ лимитера по IP может быть без тела.
+            По умолчанию лимит составляет 5 запросов в минуту.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Письмо не отправлено. Запись pending и попытка подтверждения сохранены.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+  /auth/register/confirm:
+    post:
+      tags: [Registration]
+      operationId: confirmRegistration
+      summary: Confirm registration with OTP
+      description: >-
+        Activates the pending account when the attempt ID and OTP match. The OTP
+        expires after 600 seconds. Five failed code submissions consume the attempt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmRequest'
+            example:
+              attemptId: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
+              code: '012345'
+      responses:
+        '200':
+          description: Registration confirmed and account activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+              example:
+                id: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
+                email: user@example.com
+                status: active
+        '400':
+          description: >-
+            Неверный или просроченный код подтверждения; попытка не найдена или уже
+            погашена. Также возвращается при ошибках валидации запроса.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                invalidConfirmation:
+                  summary: Invalid, expired, or consumed attempt
+                  value:
+                    type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                    title: Bad Request
+                    status: 400
+        '429':
+          description: Исчерпаны попытки ввода кода.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+components:
+  responses:
+    ValidationError:
+      description: Некорректные данные запроса.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblem'
+          example:
+            type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+            title: One or more validation errors occurred.
+            status: 400
+            errors:
+              password:
+                - Password must be at least 8 characters, include a letter and a digit, and use no more than 72 UTF-8 bytes.
+    RateLimited:
+      description: "Слишком частая регистрация: превышен лимит по IP (по умолчанию 5 запросов в минуту). Тело ответа отсутствует."
+  schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          description: Email address. The server trims and lowercases it before use.
+          example: user@example.com
+        password:
+          type: string
+          minLength: 8
+          description: >-
+            Must contain at least one letter and one digit. Maximum length is 72
+            UTF-8 bytes; this byte limit cannot be expressed by JSON Schema maxLength.
+          example: abc12345
+    ResendRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          description: Email address of the pending account.
+          example: user@example.com
+    ConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [attemptId, code]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+          description: Confirmation attempt identifier returned by registration or resend.
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Six-digit OTP sent to the account email address.
+    ConfirmationRequiredResponse:
+      type: object
+      additionalProperties: false
+      required: [confirmationRequired, method, attemptId, expiresInSeconds, resendAfterSeconds]
+      properties:
+        confirmationRequired:
+          type: boolean
+          const: true
+        method:
+          type: string
+          const: otp
+        attemptId:
+          type: string
+          format: uuid
+        expiresInSeconds:
+          type: integer
+          const: 600
+        resendAfterSeconds:
+          type: integer
+          const: 60
+    AccountResponse:
+      type: object
+      additionalProperties: false
+      required: [id, email, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        status:
+          type: string
+          const: active
+    ProblemDetails:
+      type: object
+      description: ASP.NET Core ProblemDetails error response.
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+      additionalProperties: true
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          description: ASP.NET Core validation problem response.
+          required: [errors]
+          properties:
+            errors:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string

@@ -44,6 +44,52 @@ If the HTTPS development certificate is not trusted, run:
 dotnet dev-certs https --trust
 ```
 
+## Run with Docker Desktop
+
+Start the API and PostgreSQL containers:
+
+```bash
+docker compose up --build -d
+```
+
+The API is available at `http://localhost:5117`; OpenAPI is at `http://localhost:5117/openapi/v1.json`. Compose applies pending EF Core migrations before the API starts. PostgreSQL data persists in a named volume.
+
+If another service already uses port `5117`, choose another host port:
+
+```bash
+API_PORT=5118 docker compose up --build -d
+```
+
+With this override, use `http://localhost:5118` and `http://localhost:5118/openapi/v1.json`.
+
+Rebuild and start only the API. Compose starts PostgreSQL if it is stopped:
+
+```bash
+docker compose up --build -d api
+```
+
+If port `5117` is busy, use `API_PORT=5118 docker compose up --build -d api`.
+
+Start only PostgreSQL:
+
+```bash
+docker compose up -d db
+```
+
+View API logs:
+
+```bash
+docker compose logs -f api
+```
+
+Stop containers:
+
+```bash
+docker compose down
+```
+
+`docker compose down` keeps the database volume. `docker compose down -v` removes the volume and its data.
+
 ## Endpoints
 
 | Method | Route | Purpose |

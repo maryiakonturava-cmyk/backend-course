@@ -1,0 +1,14 @@
+.git/
+.DS_Store
+.claude/
+.idea/
+.postman/
+.superpowers/
+postman/
+
+**/bin/
+**/obj/
+
+.env
+.env.*
+**/appsettings.Local.json

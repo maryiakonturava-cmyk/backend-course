@@ -104,14 +104,32 @@ public sealed class RegistrationService(
             return ResendResult.NotFound.Instance;
         }
 
-        var challenge = await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id, ct);
-        if (DateTimeOffset.UtcNow - challenge.LastSentAt < TimeSpan.FromSeconds(60))
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var challenge = await db.RegistrationChallenges
+            .FromSqlInterpolated($"SELECT * FROM \"registration_challenges\" WHERE \"user_id\" = {user.Id} FOR UPDATE")
+            .SingleAsync(ct);
+        if (!await db.Users.AnyAsync(item => item.Id == user.Id && item.Status == UserStatus.Pending, ct))
+        {
+            return ResendResult.NotFound.Instance;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (now - challenge.LastSentAt < TimeSpan.FromSeconds(60))
         {
             return ResendResult.TooSoon.Instance;
         }
 
-        var result = await ResendPendingChallengeAsync(user, ct);
-        return new ResendResult.Sent(result.AttemptId);
+        var code = OtpGenerator.Generate();
+        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code);
+        challenge.ExpiresAt = now.AddSeconds(600);
+        challenge.Attempts = 0;
+        challenge.LastSentAt = now;
+        challenge.ConsumedAt = null;
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+
+        await SendOtpAsync(user.Email, code, ct);
+        return new ResendResult.Sent(challenge.Id);
     }
 
     public async Task<ConfirmResult> ConfirmAsync(Guid attemptId, string code, CancellationToken ct)
@@ -177,22 +195,6 @@ public sealed class RegistrationService(
             RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
             throw;
         }
-    }
-
-    // used by the resend endpoint (Task 7)
-    private async Task<RegisterResult.ConfirmationRequired> ResendPendingChallengeAsync(User user, CancellationToken ct)
-    {
-        var challenge = await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id, ct);
-        var code = OtpGenerator.Generate();
-        var now = DateTimeOffset.UtcNow;
-        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code);
-        challenge.ExpiresAt = now.AddSeconds(600);
-        challenge.Attempts = 0;
-        challenge.LastSentAt = now;
-        challenge.ConsumedAt = null;
-        await db.SaveChangesAsync(ct);
-        await SendOtpAsync(user.Email, code, ct);
-        return new RegisterResult.ConfirmationRequired(challenge.Id);
     }
 
     private async Task SendOtpAsync(string email, string code, CancellationToken ct)

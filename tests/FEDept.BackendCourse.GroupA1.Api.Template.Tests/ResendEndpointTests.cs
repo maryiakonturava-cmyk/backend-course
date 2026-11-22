@@ -90,6 +90,53 @@ public sealed class ResendEndpointTests : IClassFixture<RegistrationTestFactory>
     }
 
     [Fact]
+    public async Task Resend_ConcurrentRequestsOnlySendOneCode()
+    {
+        const int requestCount = 5;
+        var email = NewEmail();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await SeedPendingAsync(db, email, DateTimeOffset.UtcNow.AddSeconds(-61));
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE FUNCTION delay_registration_challenge_update() RETURNS trigger AS $$
+                BEGIN
+                    PERFORM pg_sleep(2);
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER delay_registration_challenge_update
+                BEFORE UPDATE ON registration_challenges
+                FOR EACH ROW EXECUTE FUNCTION delay_registration_challenge_update();
+                """);
+        }
+
+        var requests = Enumerable.Range(0, requestCount).Select(_ => ResendAsync(email)).ToArray();
+        try
+        {
+            var responses = await Task.WhenAll(requests);
+
+            Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Accepted);
+            Assert.Equal(requestCount - 1, responses.Count(response => response.StatusCode == HttpStatusCode.TooManyRequests));
+            Assert.Single(_emailSender.Messages);
+        }
+        finally
+        {
+            foreach (var request in requests.Where(request => request.IsCompletedSuccessfully))
+            {
+                (await request).Dispose();
+            }
+
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await db.Database.ExecuteSqlRawAsync("DROP TRIGGER delay_registration_challenge_update ON registration_challenges;");
+            await db.Database.ExecuteSqlRawAsync("DROP FUNCTION delay_registration_challenge_update();");
+        }
+    }
+
+    [Fact]
     public async Task Resend_UnknownOrActiveEmailReturnsNotFoundWithoutSending()
     {
         var activeEmail = NewEmail();
@@ -183,7 +230,8 @@ public sealed class ResendEndpointTests : IClassFixture<RegistrationTestFactory>
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Registration:ConfirmationEnabled"] = "true",
-                ["Registration:HmacKey"] = HmacKey
+                ["Registration:HmacKey"] = HmacKey,
+                ["Registration:RateLimitPermitPerWindow"] = "100"
             }));
         builder.ConfigureServices(services =>
         {
