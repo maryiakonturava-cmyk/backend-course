@@ -9,6 +9,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddOptions<RegistrationOptions>()
     .Bind(builder.Configuration.GetSection("Registration"));
 builder.Services.AddScoped<RegistrationService>();
+builder.Services.AddSingleton<IEmailSender, NullEmailSender>();
 builder.Services.AddControllers();
 
 // Add services to the container.

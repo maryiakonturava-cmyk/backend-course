@@ -22,4 +22,18 @@ public sealed class RegistrationController(RegistrationService registrationServi
             _ => throw new InvalidOperationException("Unknown registration result.")
         };
     }
+
+    [HttpPost("register/confirm")]
+    public async Task<IActionResult> Confirm(ConfirmRequest request, CancellationToken ct)
+    {
+        var result = await registrationService.ConfirmAsync(request.AttemptId, request.Code, ct);
+
+        return result switch
+        {
+            ConfirmResult.Success success => Ok(new ConfirmedResponse(success.User.Id, success.User.Email, "active")),
+            ConfirmResult.Invalid => BadRequest(),
+            ConfirmResult.Exhausted => StatusCode(StatusCodes.Status429TooManyRequests),
+            _ => throw new InvalidOperationException("Unknown confirmation result.")
+        };
+    }
 }
