@@ -48,6 +48,51 @@ public sealed class RateLimitTests(RegistrationTestFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Confirm_ExceedingConfiguredLimit_ReturnsTooManyRequests()
+    {
+        using var app = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Registration:RateLimitPermitPerWindow"] = "2",
+                    ["Registration:ConfirmationEnabled"] = "true",
+                    ["Registration:HmacKey"] = "test-key"
+                })));
+        using var client = app.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        });
+
+        using var first = await client.PostAsJsonAsync("/auth/register/confirm", new { attemptId = Guid.NewGuid(), code = "123456" });
+        using var second = await client.PostAsJsonAsync("/auth/register/confirm", new { attemptId = Guid.NewGuid(), code = "123456" });
+        using var third = await client.PostAsJsonAsync("/auth/register/confirm", new { attemptId = Guid.NewGuid(), code = "123456" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, first.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    [Fact]
+    public void ConfirmationEnabled_WithoutHmacKey_FailsOnStartup()
+    {
+        using var app = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Registration:ConfirmationEnabled"] = "true",
+                    ["Registration:HmacKey"] = ""
+                })));
+
+        var exception = Record.Exception(() => app.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        }));
+
+        Assert.NotNull(exception);
+        Assert.Contains("HmacKey", exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RegistrationEndpoints_AppearInOpenApiWithTheirResponseStatuses()
     {
         using var app = factory.WithWebHostBuilder(builder =>

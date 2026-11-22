@@ -70,6 +70,7 @@ public sealed class RegistrationController(RegistrationService registrationServi
     }
 
     [HttpPost("register/confirm")]
+    [EnableRateLimiting("registration")]
     [ProducesResponseType(typeof(ConfirmedResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]

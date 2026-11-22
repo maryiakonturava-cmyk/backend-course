@@ -120,7 +120,10 @@ public sealed class RegistrationService(
         try
         {
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            var challenge = await db.RegistrationChallenges.SingleOrDefaultAsync(item => item.Id == attemptId, ct);
+            // row lock: FOR UPDATE serializes concurrent confirms so the 5-attempt cap holds
+            var challenge = await db.RegistrationChallenges
+                .FromSqlInterpolated($"SELECT * FROM \"registration_challenges\" WHERE \"id\" = {attemptId} FOR UPDATE")
+                .SingleOrDefaultAsync(ct);
             if (challenge is null)
             {
                 RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");

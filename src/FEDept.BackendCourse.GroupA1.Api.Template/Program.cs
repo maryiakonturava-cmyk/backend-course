@@ -11,7 +11,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOptions<RegistrationOptions>()
-    .Bind(builder.Configuration.GetSection("Registration"));
+    .Bind(builder.Configuration.GetSection("Registration"))
+    .Validate(options => !options.ConfirmationEnabled || !string.IsNullOrWhiteSpace(options.HmacKey),
+        "Registration:HmacKey must be configured when confirmation is enabled.")
+    .ValidateOnStart();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

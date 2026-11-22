@@ -31,7 +31,8 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Registration:ConfirmationEnabled"] = "true",
-                    ["Registration:HmacKey"] = HmacKey
+                    ["Registration:HmacKey"] = HmacKey,
+                    ["Registration:RateLimitPermitPerWindow"] = "1000"
                 }));
             builder.ConfigureServices(services =>
             {
@@ -110,6 +111,29 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
         var users = await afterScope.ServiceProvider.GetRequiredService<AppDbContext>()
             .Users.Where(user => user.Email == email).ToListAsync();
         Assert.Single(users);
+    }
+
+    [Fact]
+    public async Task Confirm_ParallelCorrectCodesOnlyActivateOnce()
+    {
+        var (user, challenge) = await SeedChallengeAsync(DateTimeOffset.UtcNow.AddMinutes(10));
+        var code = "654321";
+
+        var responses = await Task.WhenAll(
+            ConfirmAsync(challenge.Id, code),
+            ConfirmAsync(challenge.Id, code));
+        using var first = responses[0];
+        using var second = responses[1];
+
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.OK);
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.BadRequest);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var savedUser = await db.Users.SingleAsync(item => item.Id == user.Id);
+        var savedChallenge = await db.RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id);
+        Assert.Equal(UserStatus.Active, savedUser.Status);
+        Assert.NotNull(savedChallenge.ConsumedAt);
+        Assert.Equal(0, savedChallenge.Attempts);
     }
 
     [Fact]
