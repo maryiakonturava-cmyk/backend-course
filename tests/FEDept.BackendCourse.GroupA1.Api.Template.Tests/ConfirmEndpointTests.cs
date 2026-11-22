@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using FEDept.BackendCourse.GroupA1.Api.Template.Contracts;
@@ -82,25 +83,33 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
     }
 
     [Fact]
-    public async Task RegisterAgainForPendingEmail_ReturnsNeutralResponseWithoutCreatingAnotherChallenge()
+    public async Task RegisterAgainForPendingEmail_ReturnsConflictWithoutSendingOrChangingChallenge()
     {
         var email = NewEmail();
         using var first = await RegisterAsync(email);
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        var attemptId = await GetAttemptIdAsync(first);
+        var sentMessageCount = _emailSender.Messages.Count;
+        RegistrationChallenge originalChallenge;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            originalChallenge = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+                .RegistrationChallenges.SingleAsync(challenge => challenge.Id == attemptId);
+        }
+
         using var second = await RegisterAsync(email);
 
-        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
-        Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
-        var firstBody = await first.Content.ReadFromJsonAsync<ConfirmationRequiredResponse>();
-        var secondBody = await second.Content.ReadFromJsonAsync<ConfirmationRequiredResponse>();
-        Assert.NotNull(firstBody);
-        Assert.NotNull(secondBody);
-        Assert.Equal(firstBody.AttemptId, secondBody.AttemptId);
-
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var users = await db.Users.Where(user => user.Email == email).ToListAsync();
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal(sentMessageCount, _emailSender.Messages.Count);
+        using var afterScope = _factory.Services.CreateScope();
+        var unchangedChallenge = await afterScope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .RegistrationChallenges.SingleAsync(challenge => challenge.Id == attemptId);
+        Assert.Equal(originalChallenge.SecretHash, unchangedChallenge.SecretHash);
+        Assert.Equal(originalChallenge.Attempts, unchangedChallenge.Attempts);
+        Assert.Equal(originalChallenge.ExpiresAt, unchangedChallenge.ExpiresAt);
+        var users = await afterScope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .Users.Where(user => user.Email == email).ToListAsync();
         Assert.Single(users);
-        Assert.Single(await db.RegistrationChallenges.Where(challenge => challenge.UserId == users[0].Id && challenge.ConsumedAt == null).ToListAsync());
     }
 
     [Fact]
@@ -239,10 +248,12 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
     private sealed class CapturingEmailSender : IEmailSender
     {
         public string? LastCode { get; private set; }
+        public ConcurrentQueue<(string Email, string Code)> Messages { get; } = new();
 
         public Task SendOtpAsync(string email, string code, CancellationToken ct)
         {
             LastCode = code;
+            Messages.Enqueue((email, code));
             return Task.CompletedTask;
         }
     }

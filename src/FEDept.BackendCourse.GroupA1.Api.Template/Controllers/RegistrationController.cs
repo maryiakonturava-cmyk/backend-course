@@ -19,6 +19,7 @@ public sealed class RegistrationController(RegistrationService registrationServi
                 new RegisterActiveResponse(active.Id, active.Email, "active")),
             RegisterResult.ConfirmationRequired confirmation => Accepted(
                 new ConfirmationRequiredResponse(true, "otp", confirmation.AttemptId, 600, 60)),
+            RegisterResult.Conflict => Conflict(),
             _ => throw new InvalidOperationException("Unknown registration result.")
         };
     }

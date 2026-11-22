@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -17,7 +16,7 @@ public sealed class RegistrationService(
         var existingUser = await db.Users.SingleOrDefaultAsync(user => user.Email == normalizedEmail, ct);
         if (existingUser is not null)
         {
-            return await NeutralResultAsync(existingUser, ct);
+            return RegisterResult.Conflict.Instance;
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -78,7 +77,7 @@ public sealed class RegistrationService(
                 throw;
             }
 
-            return await NeutralResultAsync(conflictingUser, ct);
+            return RegisterResult.Conflict.Instance;
         }
     }
 
@@ -123,31 +122,7 @@ public sealed class RegistrationService(
         return new ConfirmResult.Success(user);
     }
 
-    private async Task<RegisterResult.ConfirmationRequired> NeutralResultAsync(User user, CancellationToken ct)
-    {
-        if (user.Status == UserStatus.Pending)
-        {
-            return await ResendPendingChallengeAsync(user, ct);
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var decoy = new RegistrationChallenge
-        {
-            Id = Guid.NewGuid(),
-            UserId = user.Id,
-            Method = ChallengeMethod.Otp,
-            SecretHash = new SecretHasher(options.Value.HmacKey)
-                .Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))),
-            ExpiresAt = now.AddSeconds(600),
-            Attempts = 0,
-            LastSentAt = now,
-            ConsumedAt = null
-        };
-        db.RegistrationChallenges.Add(decoy);
-        await db.SaveChangesAsync(ct);
-        return new RegisterResult.ConfirmationRequired(decoy.Id);
-    }
-
+    // used by the resend endpoint (Task 7)
     private async Task<RegisterResult.ConfirmationRequired> ResendPendingChallengeAsync(User user, CancellationToken ct)
     {
         var challenge = await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id, ct);
@@ -169,6 +144,11 @@ public abstract record RegisterResult
     public sealed record Active(Guid Id, string Email) : RegisterResult;
 
     public sealed record ConfirmationRequired(Guid AttemptId) : RegisterResult;
+
+    public sealed record Conflict : RegisterResult
+    {
+        public static Conflict Instance { get; } = new();
+    }
 }
 
 public abstract record ConfirmResult

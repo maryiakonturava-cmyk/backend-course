@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests;
@@ -18,17 +20,24 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
 {
     private readonly RegistrationTestFactory _factory;
     private readonly HttpClient _client;
+    private readonly CapturingEmailSender _emailSender = new();
 
     public RegisterEndpointTests(RegistrationTestFactory factory)
     {
         _factory = factory;
         _client = factory.WithWebHostBuilder(builder =>
+        {
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Registration:ConfirmationEnabled"] = "false"
-                })))
-            .CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+                }));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IEmailSender>();
+                services.AddSingleton<IEmailSender>(_emailSender);
+            });
+        }).CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
     }
 
     [Fact]
@@ -51,26 +60,26 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
     }
 
     [Fact]
-    public async Task Register_ExistingEmail_ReturnsNeutralAcceptedResponse()
+    public async Task Register_ExistingActiveEmail_ReturnsConflictWithoutAccountDetails()
     {
-        using var first = await RegisterAsync("taken@example.com", "abc12345");
-        using var second = await RegisterAsync("taken@example.com", "abc12345");
+        const string email = "taken@example.com";
+        using var first = await RegisterAsync(email, "abc12345");
+        using var second = await RegisterAsync(email, "abc12345");
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
-        Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
-        using var body = await JsonDocument.ParseAsync(await second.Content.ReadAsStreamAsync());
-        var root = body.RootElement;
-
-        Assert.True(root.GetProperty("confirmationRequired").GetBoolean());
-        Assert.Equal("otp", root.GetProperty("method").GetString());
-        Assert.Equal(600, root.GetProperty("expiresInSeconds").GetInt32());
-        Assert.Equal(60, root.GetProperty("resendAfterSeconds").GetInt32());
-        Assert.DoesNotContain("id", root.EnumerateObject().Select(property => property.Name));
-        Assert.DoesNotContain("email", root.EnumerateObject().Select(property => property.Name));
-        Assert.DoesNotContain("status", root.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        using var firstBody = await JsonDocument.ParseAsync(await first.Content.ReadAsStreamAsync());
+        var accountId = firstBody.RootElement.GetProperty("id").GetGuid();
+        using var secondBody = await JsonDocument.ParseAsync(await second.Content.ReadAsStreamAsync());
+        var root = secondBody.RootElement;
+        Assert.Equal((int)HttpStatusCode.Conflict, root.GetProperty("status").GetInt32());
+        Assert.False(root.TryGetProperty("id", out _));
+        Assert.False(root.TryGetProperty("email", out _));
+        Assert.DoesNotContain(accountId.ToString(), root.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(email, root.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Register_ConcurrentDuplicateRequests_ReturnExactlyOneCreatedAndOneAccepted()
+    public async Task Register_ConcurrentDuplicateRequests_ReturnExactlyOneCreatedAndOneConflict()
     {
         var responses = await Task.WhenAll(
             RegisterAsync("parallel@example.com", "abc12345"),
@@ -79,14 +88,26 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
         using var second = responses[1];
 
         Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Created));
-        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Accepted));
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Conflict));
         Assert.DoesNotContain(responses, response => response.StatusCode == HttpStatusCode.InternalServerError);
     }
 
     [Fact]
-    public async Task Register_PendingEmail_ReturnsNeutralAcceptedResponse()
+    public async Task Register_PendingEmail_ReturnsConflictWithoutSendingEmailOrChangingChallenge()
     {
         var userId = Guid.NewGuid();
+        var email = $"{Guid.NewGuid():N}@example.com";
+        var challenge = new RegistrationChallenge
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Method = ChallengeMethod.Otp,
+            SecretHash = "not-a-real-hash",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10),
+            Attempts = 2,
+            LastSentAt = DateTimeOffset.UtcNow,
+            ConsumedAt = null
+        };
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -94,33 +115,26 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
             db.Users.Add(new User
             {
                 Id = userId,
-                Email = "pending@example.com",
+                Email = email,
                 PasswordHash = "not-a-real-hash",
                 Status = UserStatus.Pending,
                 CreatedAt = now,
                 UpdatedAt = now
             });
-            db.RegistrationChallenges.Add(new RegistrationChallenge
-            {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                Method = ChallengeMethod.Otp,
-                SecretHash = "not-a-real-hash",
-                ExpiresAt = now.AddMinutes(10),
-                Attempts = 0,
-                LastSentAt = now,
-                ConsumedAt = null
-            });
+            db.RegistrationChallenges.Add(challenge);
             await db.SaveChangesAsync();
         }
 
-        using var response = await RegisterAsync("pending@example.com", "abc12345");
-        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
-        var root = body.RootElement;
+        using var response = await RegisterAsync(email, "abc12345");
 
-        Assert.True(root.GetProperty("confirmationRequired").GetBoolean());
-        Assert.NotEqual(userId, root.GetProperty("attemptId").GetGuid());
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Empty(_emailSender.Messages);
+        using var afterScope = _factory.Services.CreateScope();
+        var savedChallenge = await afterScope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id);
+        Assert.Equal(challenge.SecretHash, savedChallenge.SecretHash);
+        Assert.Equal(challenge.Attempts, savedChallenge.Attempts);
+        Assert.Equal(challenge.ExpiresAt, savedChallenge.ExpiresAt);
     }
 
     [Fact]
@@ -139,4 +153,15 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
         _client.PostAsJsonAsync("/auth/register", new RegisterRequest(email, password));
 
     public void Dispose() => _client.Dispose();
+
+    private sealed class CapturingEmailSender : IEmailSender
+    {
+        public ConcurrentQueue<(string Email, string Code)> Messages { get; } = new();
+
+        public Task SendOtpAsync(string email, string code, CancellationToken ct)
+        {
+            Messages.Enqueue((email, code));
+            return Task.CompletedTask;
+        }
+    }
 }
