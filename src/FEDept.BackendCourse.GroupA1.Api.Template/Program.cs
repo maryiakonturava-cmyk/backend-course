@@ -1,6 +1,10 @@
+using System.Threading.RateLimiting;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,6 +12,22 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOptions<RegistrationOptions>()
     .Bind(builder.Configuration.GetSection("Registration"));
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("registration", context =>
+    {
+        var permitLimit = context.RequestServices.GetRequiredService<IOptions<RegistrationOptions>>().Value.RateLimitPermitPerWindow;
+        return RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permitLimit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            });
+    });
+});
 builder.Services.AddOptions<SmtpOptions>()
     .Bind(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<RegistrationService>();
@@ -26,7 +46,14 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// shortcut: KnownProxies/KnownNetworks not configured — set before production
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor
+});
 app.UseHttpsRedirection();
+app.UseRouting();
+app.UseRateLimiter();
 
 app.MapControllers();
 

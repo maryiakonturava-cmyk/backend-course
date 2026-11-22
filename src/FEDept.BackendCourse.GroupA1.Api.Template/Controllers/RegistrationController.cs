@@ -1,6 +1,7 @@
 using FEDept.BackendCourse.GroupA1.Api.Template.Contracts;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Controllers;
 
@@ -9,6 +10,13 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Controllers;
 public sealed class RegistrationController(RegistrationService registrationService) : ControllerBase
 {
     [HttpPost("register")]
+    [EnableRateLimiting("registration")]
+    [ProducesResponseType(typeof(RegisterActiveResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ConfirmationRequiredResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Register(RegisterRequest request, CancellationToken ct)
     {
         RegisterResult result;
@@ -33,6 +41,12 @@ public sealed class RegistrationController(RegistrationService registrationServi
     }
 
     [HttpPost("register/resend")]
+    [EnableRateLimiting("registration")]
+    [ProducesResponseType(typeof(ConfirmationRequiredResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Resend(ResendRequest request, CancellationToken ct)
     {
         ResendResult result;
@@ -56,6 +70,9 @@ public sealed class RegistrationController(RegistrationService registrationServi
     }
 
     [HttpPost("register/confirm")]
+    [ProducesResponseType(typeof(ConfirmedResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Confirm(ConfirmRequest request, CancellationToken ct)
     {
         var result = await registrationService.ConfirmAsync(request.AttemptId, request.Code, ct);
