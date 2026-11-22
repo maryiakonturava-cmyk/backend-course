@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using FEDept.BackendCourse.GroupA1.Api.Template.Contracts;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
+using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -89,14 +90,26 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
             db.Users.Add(new User
             {
                 Id = userId,
                 Email = "pending@example.com",
                 PasswordHash = "not-a-real-hash",
                 Status = UserStatus.Pending,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UpdatedAt = DateTimeOffset.UtcNow
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            db.RegistrationChallenges.Add(new RegistrationChallenge
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                Method = ChallengeMethod.Otp,
+                SecretHash = "not-a-real-hash",
+                ExpiresAt = now.AddMinutes(10),
+                Attempts = 0,
+                LastSentAt = now,
+                ConsumedAt = null
             });
             await db.SaveChangesAsync();
         }

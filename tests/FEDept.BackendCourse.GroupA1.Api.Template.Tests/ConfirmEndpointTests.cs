@@ -94,7 +94,7 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
         var secondBody = await second.Content.ReadFromJsonAsync<ConfirmationRequiredResponse>();
         Assert.NotNull(firstBody);
         Assert.NotNull(secondBody);
-        Assert.NotEqual(firstBody.AttemptId, secondBody.AttemptId);
+        Assert.Equal(firstBody.AttemptId, secondBody.AttemptId);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -13,9 +14,10 @@ public sealed class RegistrationService(
     public async Task<RegisterResult> RegisterAsync(string email, string password, CancellationToken ct)
     {
         var normalizedEmail = EmailNormalizer.Normalize(email);
-        if (await db.Users.AnyAsync(user => user.Email == normalizedEmail, ct))
+        var existingUser = await db.Users.SingleOrDefaultAsync(user => user.Email == normalizedEmail, ct);
+        if (existingUser is not null)
         {
-            return NeutralResult();
+            return await NeutralResultAsync(existingUser, ct);
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -68,7 +70,15 @@ public sealed class RegistrationService(
             exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
         {
             await transaction.RollbackAsync(ct);
-            return NeutralResult();
+            await transaction.DisposeAsync();
+            db.ChangeTracker.Clear();
+            var conflictingUser = await db.Users.SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
+            if (conflictingUser is null)
+            {
+                throw;
+            }
+
+            return await NeutralResultAsync(conflictingUser, ct);
         }
     }
 
@@ -113,10 +123,44 @@ public sealed class RegistrationService(
         return new ConfirmResult.Success(user);
     }
 
-    private static RegisterResult.ConfirmationRequired NeutralResult()
+    private async Task<RegisterResult.ConfirmationRequired> NeutralResultAsync(User user, CancellationToken ct)
     {
-        // shortcut: Task 6 replaces this placeholder attemptId with a real persisted decoy challenge so confirm stays indistinguishable
-        return new RegisterResult.ConfirmationRequired(Guid.NewGuid());
+        if (user.Status == UserStatus.Pending)
+        {
+            return await ResendPendingChallengeAsync(user, ct);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var decoy = new RegistrationChallenge
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            Method = ChallengeMethod.Otp,
+            SecretHash = new SecretHasher(options.Value.HmacKey)
+                .Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))),
+            ExpiresAt = now.AddSeconds(600),
+            Attempts = 0,
+            LastSentAt = now,
+            ConsumedAt = null
+        };
+        db.RegistrationChallenges.Add(decoy);
+        await db.SaveChangesAsync(ct);
+        return new RegisterResult.ConfirmationRequired(decoy.Id);
+    }
+
+    private async Task<RegisterResult.ConfirmationRequired> ResendPendingChallengeAsync(User user, CancellationToken ct)
+    {
+        var challenge = await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id, ct);
+        var code = OtpGenerator.Generate();
+        var now = DateTimeOffset.UtcNow;
+        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code);
+        challenge.ExpiresAt = now.AddSeconds(600);
+        challenge.Attempts = 0;
+        challenge.LastSentAt = now;
+        challenge.ConsumedAt = null;
+        await db.SaveChangesAsync(ct);
+        await emailSender.SendOtpAsync(user.Email, code, ct);
+        return new RegisterResult.ConfirmationRequired(challenge.Id);
     }
 }
 
