@@ -150,7 +150,19 @@ public sealed class RegistrationService(
 
             var user = await db.Users.SingleOrDefaultAsync(item => item.Id == challenge.UserId, ct);
             normalizedEmail = user?.Email;
-            if (challenge.ConsumedAt is not null || user is null)
+            if (user is null)
+            {
+                RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+                return ConfirmResult.Invalid.Instance;
+            }
+
+            if (challenge.Attempts >= 5)
+            {
+                RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+                return ConfirmResult.Exhausted.Instance;
+            }
+
+            if (challenge.ConsumedAt is not null)
             {
                 RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
                 return ConfirmResult.Invalid.Instance;
@@ -172,7 +184,7 @@ public sealed class RegistrationService(
                     await db.SaveChangesAsync(ct);
                     await transaction.CommitAsync(ct);
                     RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
-                    return ConfirmResult.Exhausted.Instance;
+                    return ConfirmResult.Invalid.Instance;
                 }
 
                 await db.SaveChangesAsync(ct);

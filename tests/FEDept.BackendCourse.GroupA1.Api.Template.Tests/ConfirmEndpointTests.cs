@@ -146,7 +146,7 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
     }
 
     [Fact]
-    public async Task Confirm_FifthWrongCodeConsumesAttemptAndRejectsLaterCorrectCode()
+    public async Task Confirm_FifthWrongCodeReturnsBadRequestAndRejectsLaterCorrectCodeAsExhausted()
     {
         var (email, attemptId) = await RegisterPendingAsync();
         for (var i = 0; i < 4; i++)
@@ -157,17 +157,38 @@ public sealed class ConfirmEndpointTests : IClassFixture<RegistrationTestFactory
 
         using (var fifth = await ConfirmAsync(attemptId, "wrong-code"))
         {
-            Assert.Equal((HttpStatusCode)429, fifth.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, fifth.StatusCode);
         }
 
         using var correct = await ConfirmAsync(attemptId, Assert.IsType<string>(_emailSender.LastCode));
-        Assert.Equal(HttpStatusCode.BadRequest, correct.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, correct.StatusCode);
         using var scope = _factory.Services.CreateScope();
         var user = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Users.SingleAsync(item => item.Email == email);
         var challenge = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
             .RegistrationChallenges.SingleAsync(item => item.UserId == user.Id);
         Assert.Equal(5, challenge.Attempts);
         Assert.NotNull(challenge.ConsumedAt);
+    }
+
+    [Fact]
+    public async Task Confirm_CorrectFifthAttemptActivatesUser()
+    {
+        var (user, challenge) = await SeedChallengeAsync(DateTimeOffset.UtcNow.AddMinutes(10));
+        for (var i = 0; i < 4; i++)
+        {
+            using var response = await ConfirmAsync(challenge.Id, "wrong-code");
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+
+        using var fifth = await ConfirmAsync(challenge.Id, "654321");
+
+        Assert.Equal(HttpStatusCode.OK, fifth.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(UserStatus.Active, (await db.Users.SingleAsync(item => item.Id == user.Id)).Status);
+        var savedChallenge = await db.RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id);
+        Assert.Equal(4, savedChallenge.Attempts);
+        Assert.NotNull(savedChallenge.ConsumedAt);
     }
 
     [Fact]

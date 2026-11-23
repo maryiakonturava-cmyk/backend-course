@@ -10,7 +10,6 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Controllers;
 public sealed class RegistrationController(RegistrationService registrationService) : ControllerBase
 {
     [HttpPost("register")]
-    [EnableRateLimiting("registration")]
     [ProducesResponseType(typeof(RegisterActiveResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ConfirmationRequiredResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -41,7 +40,6 @@ public sealed class RegistrationController(RegistrationService registrationServi
     }
 
     [HttpPost("register/resend")]
-    [EnableRateLimiting("registration")]
     [ProducesResponseType(typeof(ConfirmationRequiredResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

@@ -23,9 +23,14 @@ dotnet --version
 
 ## Run locally
 
+Start PostgreSQL and Mailpit, then run the API:
+
 ```bash
+docker compose up -d db mailpit
 dotnet run --project src/FEDept.BackendCourse.GroupA1.Api.Template
 ```
+
+The host-run API connects to this project's PostgreSQL at `localhost:5433` and applies pending migrations in Development. Port `5432` remains available for other local PostgreSQL instances. Mailpit is at `http://localhost:8025`.
 
 By default, the development profiles expose the API at:
 
@@ -46,13 +51,15 @@ dotnet dev-certs https --trust
 
 ## Run with Docker Desktop
 
-Start the API and PostgreSQL containers:
+Start the API, PostgreSQL, and Mailpit containers:
 
 ```bash
 docker compose up --build -d
 ```
 
 The API is available at `http://localhost:5117`; OpenAPI is at `http://localhost:5117/openapi/v1.json`. Compose applies pending EF Core migrations before the API starts. PostgreSQL data persists in a named volume.
+
+Mailpit captures registration emails locally. View them at `http://localhost:8025`; SMTP listens on `localhost:1025`. The Compose API uses `mailpit:1025`; an API running outside Docker uses `localhost:1025`.
 
 If another service already uses port `5117`, choose another host port:
 

@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: groupa1
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -14,6 +16,12 @@ services:
       retries: 10
       start_period: 5s
 
+  mailpit:
+    image: axllent/mailpit:v1.32.0
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   api:
     build:
       context: .
@@ -21,11 +29,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       Database__ApplyMigrations: "true"
       ConnectionStrings__Default: Host=db;Port=5432;Database=groupa1;Username=postgres;Password=postgres
+      Smtp__Host: mailpit
+      Smtp__Port: "1025"
     ports:
       - "${API_PORT:-5117}:8080"
 
