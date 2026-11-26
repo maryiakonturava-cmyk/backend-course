@@ -40,7 +40,10 @@ public sealed class JwtTokenServiceTests
         var access = new JsonWebToken(pair.AccessToken);
         var refresh = new JsonWebToken(pair.RefreshToken);
         Assert.Equal("HS256", access.Alg);
-        Assert.Equal(["aud", "exp", "iat", "iss", "sub", "token_use"], access.Claims.Select(claim => claim.Type).Order().ToArray());
+        Assert.Equal("JWT", access.Typ);
+        var expectedClaims = new[] { "aud", "exp", "iat", "iss", "sub", "token_use" };
+        Assert.Equal(expectedClaims, access.Claims.Select(claim => claim.Type).Order().ToArray());
+        Assert.Equal(expectedClaims, refresh.Claims.Select(claim => claim.Type).Order().ToArray());
         Assert.Equal("access", access.GetClaim("token_use").Value);
         Assert.Equal("refresh", refresh.GetClaim("token_use").Value);
         Assert.Equal(900, access.ValidTo.Subtract(access.IssuedAt).TotalSeconds);
@@ -73,6 +76,14 @@ public sealed class JwtTokenServiceTests
     }
 
     [Fact]
+    public async Task Validate_BeyondClockSkew_ReturnsExpired()
+    {
+        var pair = _service.Issue(Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(-15).AddSeconds(-40));
+
+        Assert.Equal(new TokenValidation.Fail("expired"), await _service.ValidateAsync(pair.AccessToken, TokenUse.Access));
+    }
+
+    [Fact]
     public async Task Validate_WithinClockSkew_IsAccepted()
     {
         var userId = Guid.NewGuid();
@@ -98,6 +109,21 @@ public sealed class JwtTokenServiceTests
     }
 
     [Fact]
+    public async Task Validate_OtherAudience_ReturnsClaims()
+    {
+        var other = new JwtTokenService(Microsoft.Extensions.Options.Options.Create(new JwtOptions
+        {
+            AccessSecret = Options.AccessSecret,
+            RefreshSecret = Options.RefreshSecret,
+            Issuer = Options.Issuer,
+            Audience = "someone-else"
+        }));
+        var pair = other.Issue(Guid.NewGuid());
+
+        Assert.Equal(new TokenValidation.Fail("claims"), await _service.ValidateAsync(pair.AccessToken, TokenUse.Access));
+    }
+
+    [Fact]
     public async Task Validate_AccessKeyWithRefreshUse_ReturnsTokenUse()
     {
         var token = Sign(Options.AccessSecret, SecurityAlgorithms.HmacSha256, new Dictionary<string, object>
@@ -110,12 +136,46 @@ public sealed class JwtTokenServiceTests
     }
 
     [Fact]
+    public async Task Validate_EmptyGuidSub_ReturnsClaims()
+    {
+        var token = Sign(Options.AccessSecret, SecurityAlgorithms.HmacSha256, new Dictionary<string, object>
+        {
+            ["sub"] = Guid.Empty.ToString(),
+            ["token_use"] = "access"
+        });
+
+        Assert.Equal(new TokenValidation.Fail("claims"), await _service.ValidateAsync(token, TokenUse.Access));
+    }
+
+    [Fact]
     public async Task Validate_NonGuidSub_ReturnsClaims()
     {
         var token = Sign(Options.AccessSecret, SecurityAlgorithms.HmacSha256, new Dictionary<string, object>
         {
             ["sub"] = "user-42",
             ["token_use"] = "access"
+        });
+
+        Assert.Equal(new TokenValidation.Fail("claims"), await _service.ValidateAsync(token, TokenUse.Access));
+    }
+
+    [Fact]
+    public async Task Validate_MissingIssuedAt_ReturnsClaims()
+    {
+        var handler = new JsonWebTokenHandler { SetDefaultTimesOnTokenCreation = false };
+        var token = handler.CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = Options.Issuer,
+            Audience = Options.Audience,
+            Expires = DateTime.UtcNow.AddMinutes(5),
+            Claims = new Dictionary<string, object>
+            {
+                ["sub"] = Guid.NewGuid().ToString(),
+                ["token_use"] = "access"
+            },
+            SigningCredentials = new SigningCredentials(
+                new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Options.AccessSecret)),
+                SecurityAlgorithms.HmacSha256)
         });
 
         Assert.Equal(new TokenValidation.Fail("claims"), await _service.ValidateAsync(token, TokenUse.Access));
