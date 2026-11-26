@@ -999,29 +999,56 @@ public sealed class FailedLoginLimiterTests
     private readonly FailedLoginLimiter _limiter = new(new MemoryCache(new MemoryCacheOptions()));
 
     [Fact]
-    public void FourFailures_StillAllowed()
-    {
-        for (var i = 0; i < 4; i++)
-        {
-            _limiter.RecordFailure("ref", "10.0.0.1");
-        }
-
-        Assert.Null(_limiter.RetryAfterSeconds("ref", "10.0.0.1"));
-    }
-
-    [Fact]
-    public void FiveFailures_BlockThePairOnly()
+    public void FiveFailedAttempts_AllowedThenSixthBlocked()
     {
         for (var i = 0; i < 5; i++)
         {
-            _limiter.RecordFailure("ref", "10.0.0.1");
+            Assert.Null(_limiter.TryBeginAttempt("ref", "10.0.0.1"));
         }
 
-        var retryAfter = _limiter.RetryAfterSeconds("ref", "10.0.0.1");
+        var retryAfter = _limiter.TryBeginAttempt("ref", "10.0.0.1");
         Assert.NotNull(retryAfter);
         Assert.InRange(retryAfter.Value, 1, 900);
-        Assert.Null(_limiter.RetryAfterSeconds("ref", "10.0.0.2"));
-        Assert.Null(_limiter.RetryAfterSeconds("other", "10.0.0.1"));
+    }
+
+    [Fact]
+    public void Block_AppliesToThePairOnly()
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            _limiter.TryBeginAttempt("ref", "10.0.0.1");
+        }
+
+        Assert.Null(_limiter.TryBeginAttempt("ref", "10.0.0.2"));
+        Assert.Null(_limiter.TryBeginAttempt("other", "10.0.0.1"));
+    }
+
+    [Fact]
+    public void ReleasedAttempts_DoNotCount()
+    {
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.Null(_limiter.TryBeginAttempt("ref", "10.0.0.1"));
+            _limiter.Release("ref", "10.0.0.1");
+        }
+
+        Assert.Null(_limiter.TryBeginAttempt("ref", "10.0.0.1"));
+    }
+
+    [Fact]
+    public void ConcurrentAttempts_NeverExceedTheLimit()
+    {
+        var allowed = 0;
+
+        Parallel.For(0, 50, _ =>
+        {
+            if (_limiter.TryBeginAttempt("ref", "10.0.0.1") is null)
+            {
+                Interlocked.Increment(ref allowed);
+            }
+        });
+
+        Assert.Equal(FailedLoginLimiter.MaxFailures, allowed);
     }
 }
 ```
@@ -1044,37 +1071,40 @@ public sealed class FailedLoginLimiter(IMemoryCache cache)
     public const int MaxFailures = 5;
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(15);
 
-    public int? RetryAfterSeconds(string emailRef, string clientIp)
-    {
-        if (!cache.TryGetValue(Key(emailRef, clientIp), out Queue<DateTimeOffset>? failures) || failures is null)
-        {
-            return null;
-        }
+    // one gate for get-or-create, prune and count: IMemoryCache.GetOrCreate is not atomic
+    private readonly Lock _gate = new();
 
+    // reserves a slot that counts as a failure until Release; returns the seconds to wait when the pair is blocked
+    public int? TryBeginAttempt(string emailRef, string clientIp)
+    {
         var now = DateTimeOffset.UtcNow;
-        lock (failures)
+        lock (_gate)
         {
-            while (failures.Count > 0 && failures.Peek() + Window <= now)
+            var attempts = cache.GetOrCreate(Key(emailRef, clientIp), entry =>
             {
-                failures.Dequeue();
+                entry.SlidingExpiration = Window;
+                return new List<DateTimeOffset>();
+            })!;
+            attempts.RemoveAll(at => at + Window <= now);
+            if (attempts.Count >= MaxFailures)
+            {
+                return (int)Math.Ceiling((attempts[0] + Window - now).TotalSeconds);
             }
 
-            return failures.Count < MaxFailures
-                ? null
-                : (int)Math.Ceiling((failures.Peek() + Window - now).TotalSeconds);
+            attempts.Add(now);
+            return null;
         }
     }
 
-    public void RecordFailure(string emailRef, string clientIp)
+    // a successful check (or an outage) gives the reserved slot back
+    public void Release(string emailRef, string clientIp)
     {
-        var failures = cache.GetOrCreate(Key(emailRef, clientIp), entry =>
+        lock (_gate)
         {
-            entry.SlidingExpiration = Window;
-            return new Queue<DateTimeOffset>();
-        })!;
-        lock (failures)
-        {
-            failures.Enqueue(DateTimeOffset.UtcNow);
+            if (cache.TryGetValue(Key(emailRef, clientIp), out List<DateTimeOffset>? attempts) && attempts is { Count: > 0 })
+            {
+                attempts.RemoveAt(attempts.Count - 1);
+            }
         }
     }
 
@@ -1456,20 +1486,35 @@ public sealed class LoginService(
     {
         var normalizedEmail = EmailNormalizer.Normalize(email);
         var emailRef = audit.EmailRef(normalizedEmail);
-        if (failedLogins.RetryAfterSeconds(emailRef, clientIp) is { } wait)
+        // reserves a failure slot before BCrypt, so concurrent guesses cannot exceed the limit
+        if (failedLogins.TryBeginAttempt(emailRef, clientIp) is { } wait)
         {
             audit.Login(null, emailRef, "rate_limited_pair");
             return new LoginResult.TooManyRequests(wait);
         }
 
-        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
-        var passwordMatches = PasswordHasher.Verify(password, user?.PasswordHash ?? DummyHash);
-        if (user is null || !passwordMatches || user.Status != UserStatus.Active)
+        User? user;
+        bool valid;
+        try
         {
-            failedLogins.RecordFailure(emailRef, clientIp);
+            user = await db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
+            valid = PasswordHasher.Verify(password, user?.PasswordHash ?? DummyHash) && user is { Status: UserStatus.Active };
+        }
+        catch
+        {
+            // an outage is not a failed check
+            failedLogins.Release(emailRef, clientIp);
+            throw;
+        }
+
+        if (!valid || user is null)
+        {
+            // the reserved slot stays as the recorded failure
             audit.Login(user?.Id, emailRef, "invalid_credentials");
             return LoginResult.InvalidCredentials.Instance;
         }
+
+        failedLogins.Release(emailRef, clientIp);
 
         var pair = tokens.Issue(user.Id);
         audit.Login(user.Id, null, "success");
@@ -2890,20 +2935,35 @@ public sealed class LoginService(
     {
         var normalizedEmail = EmailNormalizer.Normalize(email);
         var emailRef = audit.EmailRef(normalizedEmail);
-        if (failedLogins.RetryAfterSeconds(emailRef, clientIp) is { } wait)
+        // reserves a failure slot before BCrypt, so concurrent guesses cannot exceed the limit
+        if (failedLogins.TryBeginAttempt(emailRef, clientIp) is { } wait)
         {
             audit.Login(null, emailRef, "rate_limited_pair");
             return new LoginResult.TooManyRequests(wait);
         }
 
-        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
-        var passwordMatches = PasswordHasher.Verify(password, user?.PasswordHash ?? DummyHash);
-        if (user is null || !passwordMatches || user.Status != UserStatus.Active)
+        User? user;
+        bool valid;
+        try
         {
-            failedLogins.RecordFailure(emailRef, clientIp);
+            user = await db.Users.AsNoTracking().SingleOrDefaultAsync(item => item.Email == normalizedEmail, ct);
+            valid = PasswordHasher.Verify(password, user?.PasswordHash ?? DummyHash) && user is { Status: UserStatus.Active };
+        }
+        catch
+        {
+            // an outage is not a failed check
+            failedLogins.Release(emailRef, clientIp);
+            throw;
+        }
+
+        if (!valid || user is null)
+        {
+            // the reserved slot stays as the recorded failure
             audit.Login(user?.Id, emailRef, "invalid_credentials");
             return LoginResult.InvalidCredentials.Instance;
         }
+
+        failedLogins.Release(emailRef, clientIp);
 
         if (!options.Value.ConfirmationEnabled)
         {
@@ -3813,7 +3873,7 @@ Change the forwarded headers to include the scheme, so `IsHttps` holds behind a 
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 ```
 
-Right after `app.UseForwardedHeaders(...)`, before `app.UseExceptionHandler();`:
+Right after `app.UseForwardedHeaders(...)`, before the `app.UseExceptionHandler(...)` call:
 
 ```csharp
 if (!app.Environment.IsDevelopment())
