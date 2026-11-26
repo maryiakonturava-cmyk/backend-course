@@ -35,14 +35,15 @@ public sealed class RegistrationService(
                 CreatedAt = now,
                 UpdatedAt = now
             };
-            var code = confirmationEnabled ? OtpGenerator.Generate() : null;
+            var method = options.Value.ConfirmationMethod;
+            var secret = confirmationEnabled ? GenerateSecret(method) : null;
             var challenge = confirmationEnabled
                 ? new RegistrationChallenge
                 {
                     Id = Guid.NewGuid(),
                     UserId = user.Id,
-                    Method = ChallengeMethod.Otp,
-                    SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code!),
+                    Method = method,
+                    SecretHash = new SecretHasher(options.Value.HmacKey).Hash(secret!),
                     ExpiresAt = now.AddSeconds(600),
                     Attempts = 0,
                     LastSentAt = now,
@@ -62,11 +63,11 @@ public sealed class RegistrationService(
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
 
-                if (code is not null)
+                if (secret is not null)
                 {
-                    await SendOtpAsync(normalizedEmail, code, ct);
+                    await SendSecretAsync(normalizedEmail, method, secret, ct);
                     RegistrationAudit.RegistrationAttempt(logger, normalizedEmail, "success");
-                    return new RegisterResult.ConfirmationRequired(challenge!.Id);
+                    return new RegisterResult.ConfirmationRequired(challenge!.Id, method);
                 }
 
                 RegistrationAudit.RegistrationAttempt(logger, normalizedEmail, "success");
@@ -128,7 +129,7 @@ public sealed class RegistrationService(
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
 
-        await SendOtpAsync(user.Email, code, ct);
+        await SendSecretAsync(user.Email, ChallengeMethod.Otp, code, ct);
         return new ResendResult.Sent(challenge.Id);
     }
 
@@ -209,16 +210,34 @@ public sealed class RegistrationService(
         }
     }
 
-    private async Task SendOtpAsync(string email, string code, CancellationToken ct)
+    private static string GenerateSecret(ChallengeMethod method) =>
+        method == ChallengeMethod.MagicLink ? MagicLinkTokenGenerator.Generate() : OtpGenerator.Generate();
+
+    private string BuildMagicLink(string token)
+    {
+        var baseUrl = options.Value.MagicLinkBaseUrl;
+        // base64url token needs no escaping
+        return $"{baseUrl}{(baseUrl.Contains('?') ? '&' : '?')}token={token}";
+    }
+
+    private async Task SendSecretAsync(string email, ChallengeMethod method, string secret, CancellationToken ct)
     {
         try
         {
-            await emailSender.SendOtpAsync(email, code, ct);
-            RegistrationAudit.RegistrationCodeSent(logger, email, "success");
+            if (method == ChallengeMethod.MagicLink)
+            {
+                await emailSender.SendMagicLinkAsync(email, BuildMagicLink(secret), ct);
+            }
+            else
+            {
+                await emailSender.SendOtpAsync(email, secret, ct);
+            }
+
+            RegistrationAudit.RegistrationCodeSent(logger, email, method.ToContractName(), "success");
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            RegistrationAudit.RegistrationCodeSent(logger, email, "failure");
+            RegistrationAudit.RegistrationCodeSent(logger, email, method.ToContractName(), "failure");
             throw new EmailDeliveryException(exception);
         }
     }
@@ -228,7 +247,7 @@ public abstract record RegisterResult
 {
     public sealed record Active(Guid Id, string Email) : RegisterResult;
 
-    public sealed record ConfirmationRequired(Guid AttemptId) : RegisterResult;
+    public sealed record ConfirmationRequired(Guid AttemptId, ChallengeMethod Method) : RegisterResult;
 
     public sealed record Conflict : RegisterResult
     {

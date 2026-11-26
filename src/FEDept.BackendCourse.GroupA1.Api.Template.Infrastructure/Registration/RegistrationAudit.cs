@@ -8,9 +8,9 @@ internal static class RegistrationAudit
         logger.LogInformation("Registration audit EventName={EventName} Email={Email} Outcome={Outcome}",
             nameof(RegistrationAttempt), email, outcome);
 
-    public static void RegistrationCodeSent(ILogger logger, string email, string outcome) =>
-        logger.LogInformation("Registration audit EventName={EventName} Email={Email} Outcome={Outcome}",
-            nameof(RegistrationCodeSent), email, outcome);
+    public static void RegistrationCodeSent(ILogger logger, string email, string method, string outcome) =>
+        logger.LogInformation("Registration audit EventName={EventName} Email={Email} Method={Method} Outcome={Outcome}",
+            nameof(RegistrationCodeSent), email, method, outcome);
 
     public static void RegistrationConfirm(ILogger logger, string? email, string outcome) =>
         logger.LogInformation("Registration audit EventName={EventName} Email={Email} Outcome={Outcome}",
