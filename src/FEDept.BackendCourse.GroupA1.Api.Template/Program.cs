@@ -50,6 +50,7 @@ builder.Services.AddOptions<LoginOptions>()
     .Bind(builder.Configuration.GetSection("Login"))
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<LoginOptions>, AuthConfigurationValidator>();
+builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddScoped<RegistrationService>();
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddControllers();
