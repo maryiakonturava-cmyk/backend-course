@@ -163,5 +163,7 @@ public sealed class RegisterEndpointTests : IClassFixture<RegistrationTestFactor
             Messages.Enqueue((email, code));
             return Task.CompletedTask;
         }
+
+        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) => Task.CompletedTask;
     }
 }

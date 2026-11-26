@@ -291,11 +291,16 @@ public sealed class ResendEndpointTests : IClassFixture<RegistrationTestFactory>
             Messages.Enqueue((email, code));
             return Task.CompletedTask;
         }
+
+        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class ThrowingEmailSender : IEmailSender
     {
         public Task SendOtpAsync(string email, string code, CancellationToken ct) =>
+            Task.FromException(new InvalidOperationException("SMTP unavailable"));
+
+        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) =>
             Task.FromException(new InvalidOperationException("SMTP unavailable"));
     }
 }

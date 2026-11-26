@@ -97,6 +97,8 @@ public sealed class AuditLoggingTests(RegistrationTestFactory factory) : IClassF
             Messages.Enqueue((email, code));
             return Task.CompletedTask;
         }
+
+        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class CapturingLoggerProvider : ILoggerProvider

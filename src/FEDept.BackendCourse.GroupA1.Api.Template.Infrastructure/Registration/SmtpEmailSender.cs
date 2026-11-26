@@ -7,12 +7,18 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 
 public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSender
 {
-    public async Task SendOtpAsync(string email, string code, CancellationToken ct)
+    public Task SendOtpAsync(string email, string code, CancellationToken ct) =>
+        SendAsync(email, "Registration verification code", $"Your verification code is {code}.", ct);
+
+    public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) =>
+        SendAsync(email, "Confirm your registration", $"Open this link to confirm your registration: {link}", ct);
+
+    private async Task SendAsync(string email, string subject, string text, CancellationToken ct)
     {
         var message = new MimeMessage
         {
-            Subject = "Registration verification code",
-            Body = new TextPart("plain") { Text = $"Your verification code is {code}." }
+            Subject = subject,
+            Body = new TextPart("plain") { Text = text }
         };
         message.From.Add(MailboxAddress.Parse(options.Value.From));
         message.To.Add(MailboxAddress.Parse(email));
