@@ -1,5 +1,7 @@
 using System.Threading.RateLimiting;
+using FEDept.BackendCourse.GroupA1.Api.Template.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
+using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
@@ -40,6 +42,14 @@ builder.Services.AddRateLimiter(options =>
 });
 builder.Services.AddOptions<SmtpOptions>()
     .Bind(builder.Configuration.GetSection("Smtp"));
+builder.Services.AddOptions<JwtOptions>()
+    .Bind(builder.Configuration.GetSection("Jwt"));
+builder.Services.AddOptions<FrontendOptions>()
+    .Bind(builder.Configuration.GetSection("Frontend"));
+builder.Services.AddOptions<LoginOptions>()
+    .Bind(builder.Configuration.GetSection("Login"))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<LoginOptions>, AuthConfigurationValidator>();
 builder.Services.AddScoped<RegistrationService>();
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddControllers();
