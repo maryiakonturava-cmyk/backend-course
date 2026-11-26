@@ -14,6 +14,13 @@ builder.Services.AddOptions<RegistrationOptions>()
     .Bind(builder.Configuration.GetSection("Registration"))
     .Validate(options => !options.ConfirmationEnabled || !string.IsNullOrWhiteSpace(options.HmacKey),
         "Registration:HmacKey must be configured when confirmation is enabled.")
+    .Validate(options => Enum.IsDefined(options.ConfirmationMethod),
+        "Registration:ConfirmationMethod must be Otp or MagicLink.")
+    .Validate(options => !options.ConfirmationEnabled
+            || options.ConfirmationMethod != ChallengeMethod.MagicLink
+            || (Uri.TryCreate(options.MagicLinkBaseUrl, UriKind.Absolute, out var baseUrl)
+                && (baseUrl.Scheme == Uri.UriSchemeHttp || baseUrl.Scheme == Uri.UriSchemeHttps)),
+        "Registration:MagicLinkBaseUrl must be an absolute URL when the magic link method is enabled.")
     .ValidateOnStart();
 builder.Services.AddRateLimiter(options =>
 {

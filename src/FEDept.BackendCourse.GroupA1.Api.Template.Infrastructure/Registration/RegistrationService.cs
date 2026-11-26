@@ -35,14 +35,15 @@ public sealed class RegistrationService(
                 CreatedAt = now,
                 UpdatedAt = now
             };
-            var code = confirmationEnabled ? OtpGenerator.Generate() : null;
+            var method = options.Value.ConfirmationMethod;
+            var secret = confirmationEnabled ? GenerateSecret(method) : null;
             var challenge = confirmationEnabled
                 ? new RegistrationChallenge
                 {
                     Id = Guid.NewGuid(),
                     UserId = user.Id,
-                    Method = ChallengeMethod.Otp,
-                    SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code!),
+                    Method = method,
+                    SecretHash = new SecretHasher(options.Value.HmacKey).Hash(secret!),
                     ExpiresAt = now.AddSeconds(600),
                     Attempts = 0,
                     LastSentAt = now,
@@ -62,11 +63,11 @@ public sealed class RegistrationService(
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
 
-                if (code is not null)
+                if (secret is not null)
                 {
-                    await SendOtpAsync(normalizedEmail, code, ct);
+                    await SendSecretAsync(normalizedEmail, method, secret, ct);
                     RegistrationAudit.RegistrationAttempt(logger, normalizedEmail, "success");
-                    return new RegisterResult.ConfirmationRequired(challenge!.Id);
+                    return new RegisterResult.ConfirmationRequired(challenge!.Id, method);
                 }
 
                 RegistrationAudit.RegistrationAttempt(logger, normalizedEmail, "success");
@@ -119,8 +120,8 @@ public sealed class RegistrationService(
             return ResendResult.TooSoon.Instance;
         }
 
-        var code = OtpGenerator.Generate();
-        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code);
+        var secret = GenerateSecret(challenge.Method);
+        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(secret);
         challenge.ExpiresAt = now.AddSeconds(600);
         challenge.Attempts = 0;
         challenge.LastSentAt = now;
@@ -128,11 +129,11 @@ public sealed class RegistrationService(
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
 
-        await SendOtpAsync(user.Email, code, ct);
-        return new ResendResult.Sent(challenge.Id);
+        await SendSecretAsync(user.Email, challenge.Method, secret, ct);
+        return new ResendResult.Sent(challenge.Id, challenge.Method);
     }
 
-    public async Task<ConfirmResult> ConfirmAsync(Guid attemptId, string code, CancellationToken ct)
+    public async Task<ConfirmResult> ConfirmOtpAsync(Guid attemptId, string code, CancellationToken ct)
     {
         string? normalizedEmail = null;
         try
@@ -150,7 +151,7 @@ public sealed class RegistrationService(
 
             var user = await db.Users.SingleOrDefaultAsync(item => item.Id == challenge.UserId, ct);
             normalizedEmail = user?.Email;
-            if (user is null)
+            if (user is null || challenge.Method != ChallengeMethod.Otp)
             {
                 RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
                 return ConfirmResult.Invalid.Instance;
@@ -193,14 +194,7 @@ public sealed class RegistrationService(
                 return ConfirmResult.Invalid.Instance;
             }
 
-            user.Status = UserStatus.Active;
-            user.UpdatedAt = now;
-            challenge.ConsumedAt = now;
-            // shortcut: assign user role here once RBAC module exists
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "success");
-            return new ConfirmResult.Success(user);
+            return await ActivateAsync(user, challenge, now, ct);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -209,16 +203,76 @@ public sealed class RegistrationService(
         }
     }
 
-    private async Task SendOtpAsync(string email, string code, CancellationToken ct)
+    public async Task<ConfirmResult> ConfirmTokenAsync(string token, CancellationToken ct)
     {
+        string? normalizedEmail = null;
         try
         {
-            await emailSender.SendOtpAsync(email, code, ct);
-            RegistrationAudit.RegistrationCodeSent(logger, email, "success");
+            var secretHash = new SecretHasher(options.Value.HmacKey).Hash(token);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // row lock: FOR UPDATE makes a concurrent double submit activate once
+            var challenge = await db.RegistrationChallenges
+                .FromSqlInterpolated($"SELECT * FROM \"registration_challenges\" WHERE \"secret_hash\" = {secretHash} AND \"method\" = {nameof(ChallengeMethod.MagicLink)} FOR UPDATE")
+                .SingleOrDefaultAsync(ct);
+            var user = challenge is null ? null : await db.Users.SingleOrDefaultAsync(item => item.Id == challenge.UserId, ct);
+            normalizedEmail = user?.Email;
+            var now = DateTimeOffset.UtcNow;
+            if (challenge is null || user is null || challenge.ConsumedAt is not null || challenge.ExpiresAt <= now)
+            {
+                RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+                return ConfirmResult.Invalid.Instance;
+            }
+
+            return await ActivateAsync(user, challenge, now, ct);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            RegistrationAudit.RegistrationCodeSent(logger, email, "failure");
+            RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+            throw;
+        }
+    }
+
+    private async Task<ConfirmResult> ActivateAsync(
+        User user, RegistrationChallenge challenge, DateTimeOffset now, CancellationToken ct)
+    {
+        user.Status = UserStatus.Active;
+        user.UpdatedAt = now;
+        challenge.ConsumedAt = now;
+        // shortcut: assign user role here once RBAC module exists
+        await db.SaveChangesAsync(ct);
+        await db.Database.CommitTransactionAsync(ct);
+        RegistrationAudit.RegistrationConfirm(logger, user.Email, "success");
+        return new ConfirmResult.Success(user);
+    }
+
+    private static string GenerateSecret(ChallengeMethod method) =>
+        method == ChallengeMethod.MagicLink ? MagicLinkTokenGenerator.Generate() : OtpGenerator.Generate();
+
+    private string BuildMagicLink(string token)
+    {
+        var baseUrl = options.Value.MagicLinkBaseUrl;
+        // base64url token needs no escaping
+        return $"{baseUrl}{(baseUrl.Contains('?') ? '&' : '?')}token={token}";
+    }
+
+    private async Task SendSecretAsync(string email, ChallengeMethod method, string secret, CancellationToken ct)
+    {
+        try
+        {
+            if (method == ChallengeMethod.MagicLink)
+            {
+                await emailSender.SendMagicLinkAsync(email, BuildMagicLink(secret), ct);
+            }
+            else
+            {
+                await emailSender.SendOtpAsync(email, secret, ct);
+            }
+
+            RegistrationAudit.RegistrationCodeSent(logger, email, method.ToContractName(), "success");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            RegistrationAudit.RegistrationCodeSent(logger, email, method.ToContractName(), "failure");
             throw new EmailDeliveryException(exception);
         }
     }
@@ -228,7 +282,7 @@ public abstract record RegisterResult
 {
     public sealed record Active(Guid Id, string Email) : RegisterResult;
 
-    public sealed record ConfirmationRequired(Guid AttemptId) : RegisterResult;
+    public sealed record ConfirmationRequired(Guid AttemptId, ChallengeMethod Method) : RegisterResult;
 
     public sealed record Conflict : RegisterResult
     {
@@ -238,7 +292,7 @@ public abstract record RegisterResult
 
 public abstract record ResendResult
 {
-    public sealed record Sent(Guid AttemptId) : ResendResult;
+    public sealed record Sent(Guid AttemptId, ChallengeMethod Method) : ResendResult;
 
     public sealed record TooSoon : ResendResult
     {

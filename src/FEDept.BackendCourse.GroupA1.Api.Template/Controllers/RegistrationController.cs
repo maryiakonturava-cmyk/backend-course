@@ -33,7 +33,7 @@ public sealed class RegistrationController(RegistrationService registrationServi
             RegisterResult.Active active => StatusCode(StatusCodes.Status201Created,
                 new RegisterActiveResponse(active.Id, active.Email, "active")),
             RegisterResult.ConfirmationRequired confirmation => Accepted(
-                new ConfirmationRequiredResponse(true, "otp", confirmation.AttemptId, 600, 60)),
+                new ConfirmationRequiredResponse(true, confirmation.Method.ToContractName(), confirmation.AttemptId, 600, 60)),
             RegisterResult.Conflict => Conflict(),
             _ => throw new InvalidOperationException("Unknown registration result.")
         };
@@ -60,7 +60,7 @@ public sealed class RegistrationController(RegistrationService registrationServi
         return result switch
         {
             ResendResult.Sent sent => Accepted(
-                new ConfirmationRequiredResponse(true, "otp", sent.AttemptId, 600, 60)),
+                new ConfirmationRequiredResponse(true, sent.Method.ToContractName(), sent.AttemptId, 600, 60)),
             ResendResult.TooSoon => StatusCode(StatusCodes.Status429TooManyRequests),
             ResendResult.NotFound => NotFound(),
             _ => throw new InvalidOperationException("Unknown resend result.")
@@ -74,7 +74,9 @@ public sealed class RegistrationController(RegistrationService registrationServi
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Confirm(ConfirmRequest request, CancellationToken ct)
     {
-        var result = await registrationService.ConfirmAsync(request.AttemptId, request.Code, ct);
+        var result = request.Token is not null
+            ? await registrationService.ConfirmTokenAsync(request.Token, ct)
+            : await registrationService.ConfirmOtpAsync(request.AttemptId!.Value, request.Code!, ct);
 
         return result switch
         {
