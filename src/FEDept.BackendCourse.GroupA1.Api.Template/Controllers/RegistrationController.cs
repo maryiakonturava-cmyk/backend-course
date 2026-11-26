@@ -60,7 +60,7 @@ public sealed class RegistrationController(RegistrationService registrationServi
         return result switch
         {
             ResendResult.Sent sent => Accepted(
-                new ConfirmationRequiredResponse(true, "otp", sent.AttemptId, 600, 60)),
+                new ConfirmationRequiredResponse(true, sent.Method.ToContractName(), sent.AttemptId, 600, 60)),
             ResendResult.TooSoon => StatusCode(StatusCodes.Status429TooManyRequests),
             ResendResult.NotFound => NotFound(),
             _ => throw new InvalidOperationException("Unknown resend result.")

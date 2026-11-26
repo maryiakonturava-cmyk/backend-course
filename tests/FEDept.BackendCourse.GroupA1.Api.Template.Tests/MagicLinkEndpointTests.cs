@@ -198,6 +198,34 @@ public sealed class MagicLinkEndpointTests : IClassFixture<RegistrationTestFacto
         Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
     }
 
+    [Fact]
+    public async Task Resend_UsesStoredMethodAndReplacesOldToken()
+    {
+        var oldToken = MagicLinkTokenGenerator.Generate();
+        var now = DateTimeOffset.UtcNow;
+        var (user, challenge) = await SeedChallengeAsync(
+            ChallengeMethod.MagicLink, oldToken, now.AddMinutes(10), lastSentAt: now.AddSeconds(-61));
+        // current config says Otp; the issued challenge must still get a link
+        using var otpConfigClient = CreateClient("Otp", BaseUrl);
+
+        using var resend = await otpConfigClient.PostAsJsonAsync("/auth/register/resend", new ResendRequest(user.Email));
+
+        Assert.Equal(HttpStatusCode.Accepted, resend.StatusCode);
+        var body = await resend.Content.ReadFromJsonAsync<ConfirmationRequiredResponse>();
+        Assert.NotNull(body);
+        Assert.Equal("magic_link", body.Method);
+        Assert.Equal(challenge.Id, body.AttemptId);
+        var newToken = TokenFor(user.Email);
+        Assert.NotEqual(oldToken, newToken);
+        using (var old = await ConfirmTokenAsync(oldToken))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, old.StatusCode);
+        }
+
+        using var fresh = await ConfirmTokenAsync(newToken);
+        Assert.Equal(HttpStatusCode.OK, fresh.StatusCode);
+    }
+
     private HttpClient CreateClient(string method, string baseUrl) => _factory.WithWebHostBuilder(builder =>
     {
         builder.ConfigureAppConfiguration((_, configuration) =>

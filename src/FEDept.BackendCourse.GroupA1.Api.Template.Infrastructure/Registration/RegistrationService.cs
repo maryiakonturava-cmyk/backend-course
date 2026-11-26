@@ -120,8 +120,8 @@ public sealed class RegistrationService(
             return ResendResult.TooSoon.Instance;
         }
 
-        var code = OtpGenerator.Generate();
-        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(code);
+        var secret = GenerateSecret(challenge.Method);
+        challenge.SecretHash = new SecretHasher(options.Value.HmacKey).Hash(secret);
         challenge.ExpiresAt = now.AddSeconds(600);
         challenge.Attempts = 0;
         challenge.LastSentAt = now;
@@ -129,8 +129,8 @@ public sealed class RegistrationService(
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
 
-        await SendSecretAsync(user.Email, ChallengeMethod.Otp, code, ct);
-        return new ResendResult.Sent(challenge.Id);
+        await SendSecretAsync(user.Email, challenge.Method, secret, ct);
+        return new ResendResult.Sent(challenge.Id, challenge.Method);
     }
 
     public async Task<ConfirmResult> ConfirmOtpAsync(Guid attemptId, string code, CancellationToken ct)
@@ -292,7 +292,7 @@ public abstract record RegisterResult
 
 public abstract record ResendResult
 {
-    public sealed record Sent(Guid AttemptId) : ResendResult;
+    public sealed record Sent(Guid AttemptId, ChallengeMethod Method) : ResendResult;
 
     public sealed record TooSoon : ResendResult
     {
