@@ -52,6 +52,8 @@ builder.Services.AddOptions<LoginOptions>()
 builder.Services.AddSingleton<IValidateOptions<LoginOptions>, AuthConfigurationValidator>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<AuthAudit>();
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<FailedLoginLimiter>();
 builder.Services.AddExceptionHandler<DependencyFailureHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<RegistrationService>();
