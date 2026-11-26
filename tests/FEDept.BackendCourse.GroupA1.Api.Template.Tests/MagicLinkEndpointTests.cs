@@ -65,6 +65,139 @@ public sealed class MagicLinkEndpointTests : IClassFixture<RegistrationTestFacto
         Assert.Equal(new SecretHasher(HmacKey).Hash(token), challenge.SecretHash);
     }
 
+    [Fact]
+    public async Task RegisterThenConfirmToken_ActivatesUserAndConsumesChallenge()
+    {
+        var email = NewEmail();
+        using var registration = await RegisterAsync(email);
+        Assert.Equal(HttpStatusCode.Accepted, registration.StatusCode);
+
+        using var confirmation = await ConfirmTokenAsync(TokenFor(email));
+
+        Assert.Equal(HttpStatusCode.OK, confirmation.StatusCode);
+        var body = await confirmation.Content.ReadFromJsonAsync<ConfirmedResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(email, body.Email);
+        Assert.Equal("active", body.Status);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var user = await db.Users.SingleAsync(item => item.Email == email);
+        Assert.Equal(body.Id, user.Id);
+        Assert.Equal(UserStatus.Active, user.Status);
+        Assert.NotNull((await db.RegistrationChallenges.SingleAsync(item => item.UserId == user.Id)).ConsumedAt);
+    }
+
+    [Fact]
+    public async Task ConfirmToken_ReusedTokenReturnsBadRequest()
+    {
+        var token = MagicLinkTokenGenerator.Generate();
+        await SeedChallengeAsync(ChallengeMethod.MagicLink, token, DateTimeOffset.UtcNow.AddMinutes(10));
+        using (var first = await ConfirmTokenAsync(token))
+        {
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        }
+
+        using var second = await ConfirmTokenAsync(token);
+
+        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConfirmToken_UnknownTokenReturnsBadRequest()
+    {
+        using var response = await ConfirmTokenAsync(MagicLinkTokenGenerator.Generate());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConfirmToken_ExpiredReturnsBadRequestAndKeepsUserPending()
+    {
+        var token = MagicLinkTokenGenerator.Generate();
+        var (user, challenge) = await SeedChallengeAsync(ChallengeMethod.MagicLink, token, DateTimeOffset.UtcNow.AddSeconds(-1));
+
+        using var response = await ConfirmTokenAsync(token);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(UserStatus.Pending, (await db.Users.SingleAsync(item => item.Id == user.Id)).Status);
+        Assert.Null((await db.RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id)).ConsumedAt);
+    }
+
+    [Fact]
+    public async Task ConfirmToken_ParallelSubmitsActivateOnce()
+    {
+        var token = MagicLinkTokenGenerator.Generate();
+        await SeedChallengeAsync(ChallengeMethod.MagicLink, token, DateTimeOffset.UtcNow.AddMinutes(10));
+
+        var responses = await Task.WhenAll(ConfirmTokenAsync(token), ConfirmTokenAsync(token));
+        using var first = responses[0];
+        using var second = responses[1];
+
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.OK);
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ConfirmToken_AgainstOtpChallengeReturnsBadRequest()
+    {
+        var token = MagicLinkTokenGenerator.Generate();
+        // same HMAC, wrong method: proves the lookup filters by method
+        var (user, _) = await SeedChallengeAsync(ChallengeMethod.Otp, token, DateTimeOffset.UtcNow.AddMinutes(10));
+
+        using var response = await ConfirmTokenAsync(token);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(UserStatus.Pending, (await db.Users.SingleAsync(item => item.Id == user.Id)).Status);
+    }
+
+    [Fact]
+    public async Task ConfirmCode_AgainstLinkChallengeReturnsBadRequestWithoutCountingAttempt()
+    {
+        // secret matches, method does not
+        var (user, challenge) = await SeedChallengeAsync(ChallengeMethod.MagicLink, "654321", DateTimeOffset.UtcNow.AddMinutes(10));
+
+        using var response = await _client.PostAsJsonAsync("/auth/register/confirm",
+            new { attemptId = challenge.Id, code = "654321" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var saved = await db.RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id);
+        Assert.Equal(0, saved.Attempts);
+        Assert.Null(saved.ConsumedAt);
+        Assert.Equal(UserStatus.Pending, (await db.Users.SingleAsync(item => item.Id == user.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Confirm_InvalidBodyShapesReturnBadRequest()
+    {
+        var token = MagicLinkTokenGenerator.Generate();
+        await SeedChallengeAsync(ChallengeMethod.MagicLink, token, DateTimeOffset.UtcNow.AddMinutes(10));
+        object[] bodies =
+        [
+            new { attemptId = Guid.NewGuid(), code = "123456", token },
+            new { code = "123456", token },
+            new { attemptId = Guid.NewGuid(), token },
+            new { attemptId = Guid.NewGuid() },
+            new { token = "" },
+            new { }
+        ];
+
+        foreach (var body in bodies)
+        {
+            using var response = await _client.PostAsJsonAsync("/auth/register/confirm", body);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+
+        // the valid token was never consumed by a rejected mixed body
+        using var valid = await ConfirmTokenAsync(token);
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+    }
+
     private HttpClient CreateClient(string method, string baseUrl) => _factory.WithWebHostBuilder(builder =>
     {
         builder.ConfigureAppConfiguration((_, configuration) =>
@@ -91,6 +224,41 @@ public sealed class MagicLinkEndpointTests : IClassFixture<RegistrationTestFacto
         var link = _emailSender.Links.Last(item => item.Email == email).Link;
         Assert.StartsWith($"{BaseUrl}?token=", link, StringComparison.Ordinal);
         return link[$"{BaseUrl}?token=".Length..];
+    }
+
+    private Task<HttpResponseMessage> ConfirmTokenAsync(string token) =>
+        _client.PostAsJsonAsync("/auth/register/confirm", new { token });
+
+    private async Task<(User User, RegistrationChallenge Challenge)> SeedChallengeAsync(
+        ChallengeMethod method, string secret, DateTimeOffset expiresAt, DateTimeOffset? lastSentAt = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = NewEmail(),
+            PasswordHash = "not-a-real-hash",
+            Status = UserStatus.Pending,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        var challenge = new RegistrationChallenge
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            Method = method,
+            SecretHash = new SecretHasher(HmacKey).Hash(secret),
+            ExpiresAt = expiresAt,
+            Attempts = 0,
+            LastSentAt = lastSentAt ?? now,
+            ConsumedAt = null
+        };
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Users.Add(user);
+        db.RegistrationChallenges.Add(challenge);
+        await db.SaveChangesAsync();
+        return (user, challenge);
     }
 
     private static string NewEmail() => $"{Guid.NewGuid():N}@example.com";

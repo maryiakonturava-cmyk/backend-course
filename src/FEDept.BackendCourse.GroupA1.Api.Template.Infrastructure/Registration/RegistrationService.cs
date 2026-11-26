@@ -133,7 +133,7 @@ public sealed class RegistrationService(
         return new ResendResult.Sent(challenge.Id);
     }
 
-    public async Task<ConfirmResult> ConfirmAsync(Guid attemptId, string code, CancellationToken ct)
+    public async Task<ConfirmResult> ConfirmOtpAsync(Guid attemptId, string code, CancellationToken ct)
     {
         string? normalizedEmail = null;
         try
@@ -151,7 +151,7 @@ public sealed class RegistrationService(
 
             var user = await db.Users.SingleOrDefaultAsync(item => item.Id == challenge.UserId, ct);
             normalizedEmail = user?.Email;
-            if (user is null)
+            if (user is null || challenge.Method != ChallengeMethod.Otp)
             {
                 RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
                 return ConfirmResult.Invalid.Instance;
@@ -194,20 +194,55 @@ public sealed class RegistrationService(
                 return ConfirmResult.Invalid.Instance;
             }
 
-            user.Status = UserStatus.Active;
-            user.UpdatedAt = now;
-            challenge.ConsumedAt = now;
-            // shortcut: assign user role here once RBAC module exists
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "success");
-            return new ConfirmResult.Success(user);
+            return await ActivateAsync(user, challenge, now, ct);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
             throw;
         }
+    }
+
+    public async Task<ConfirmResult> ConfirmTokenAsync(string token, CancellationToken ct)
+    {
+        string? normalizedEmail = null;
+        try
+        {
+            var secretHash = new SecretHasher(options.Value.HmacKey).Hash(token);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // row lock: FOR UPDATE makes a concurrent double submit activate once
+            var challenge = await db.RegistrationChallenges
+                .FromSqlInterpolated($"SELECT * FROM \"registration_challenges\" WHERE \"secret_hash\" = {secretHash} AND \"method\" = {nameof(ChallengeMethod.MagicLink)} FOR UPDATE")
+                .SingleOrDefaultAsync(ct);
+            var user = challenge is null ? null : await db.Users.SingleOrDefaultAsync(item => item.Id == challenge.UserId, ct);
+            normalizedEmail = user?.Email;
+            var now = DateTimeOffset.UtcNow;
+            if (challenge is null || user is null || challenge.ConsumedAt is not null || challenge.ExpiresAt <= now)
+            {
+                RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+                return ConfirmResult.Invalid.Instance;
+            }
+
+            return await ActivateAsync(user, challenge, now, ct);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            RegistrationAudit.RegistrationConfirm(logger, normalizedEmail, "failure");
+            throw;
+        }
+    }
+
+    private async Task<ConfirmResult> ActivateAsync(
+        User user, RegistrationChallenge challenge, DateTimeOffset now, CancellationToken ct)
+    {
+        user.Status = UserStatus.Active;
+        user.UpdatedAt = now;
+        challenge.ConsumedAt = now;
+        // shortcut: assign user role here once RBAC module exists
+        await db.SaveChangesAsync(ct);
+        await db.Database.CommitTransactionAsync(ct);
+        RegistrationAudit.RegistrationConfirm(logger, user.Email, "success");
+        return new ConfirmResult.Success(user);
     }
 
     private static string GenerateSecret(ChallengeMethod method) =>

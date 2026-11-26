@@ -74,7 +74,9 @@ public sealed class RegistrationController(RegistrationService registrationServi
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Confirm(ConfirmRequest request, CancellationToken ct)
     {
-        var result = await registrationService.ConfirmAsync(request.AttemptId, request.Code, ct);
+        var result = request.Token is not null
+            ? await registrationService.ConfirmTokenAsync(request.Token, ct)
+            : await registrationService.ConfirmOtpAsync(request.AttemptId!.Value, request.Code!, ct);
 
         return result switch
         {
