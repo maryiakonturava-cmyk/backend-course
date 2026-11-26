@@ -51,6 +51,9 @@ builder.Services.AddOptions<LoginOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<LoginOptions>, AuthConfigurationValidator>();
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<AuthAudit>();
+builder.Services.AddExceptionHandler<DependencyFailureHandler>();
+builder.Services.AddProblemDetails();
 builder.Services.AddScoped<RegistrationService>();
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddControllers();
@@ -78,6 +81,7 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor
 });
+app.UseExceptionHandler();
 app.UseHttpsRedirection();
 app.UseRouting();
 app.UseRateLimiter();
