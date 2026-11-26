@@ -20,6 +20,7 @@ public sealed class DependencyFailureHandler(AuthAudit audit) : IExceptionHandle
 
             if (current is NpgsqlException npgsql)
             {
+                // a constraint violation is a bug (500); only connection-level or transient errors are an outage
                 dependency = npgsql is not PostgresException || npgsql.IsTransient ? "db" : null;
                 break;
             }
@@ -35,5 +36,4 @@ public sealed class DependencyFailureHandler(AuthAudit audit) : IExceptionHandle
         await httpContext.Response.WriteAsJsonAsync(ErrorResponses.ServiceUnavailable, cancellationToken);
         return true;
     }
-
 }
