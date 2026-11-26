@@ -8,37 +8,40 @@ public sealed class FailedLoginLimiter(IMemoryCache cache)
     public const int MaxFailures = 5;
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(15);
 
-    public int? RetryAfterSeconds(string emailRef, string clientIp)
-    {
-        if (!cache.TryGetValue(Key(emailRef, clientIp), out Queue<DateTimeOffset>? failures) || failures is null)
-        {
-            return null;
-        }
+    // one gate for get-or-create, prune and count: IMemoryCache.GetOrCreate is not atomic
+    private readonly Lock _gate = new();
 
+    // reserves a slot that counts as a failure until Release; returns the seconds to wait when the pair is blocked
+    public int? TryBeginAttempt(string emailRef, string clientIp)
+    {
         var now = DateTimeOffset.UtcNow;
-        lock (failures)
+        lock (_gate)
         {
-            while (failures.Count > 0 && failures.Peek() + Window <= now)
+            var attempts = cache.GetOrCreate(Key(emailRef, clientIp), entry =>
             {
-                failures.Dequeue();
+                entry.SlidingExpiration = Window;
+                return new List<DateTimeOffset>();
+            })!;
+            attempts.RemoveAll(at => at + Window <= now);
+            if (attempts.Count >= MaxFailures)
+            {
+                return (int)Math.Ceiling((attempts[0] + Window - now).TotalSeconds);
             }
 
-            return failures.Count < MaxFailures
-                ? null
-                : (int)Math.Ceiling((failures.Peek() + Window - now).TotalSeconds);
+            attempts.Add(now);
+            return null;
         }
     }
 
-    public void RecordFailure(string emailRef, string clientIp)
+    // a successful check (or an outage) gives the reserved slot back
+    public void Release(string emailRef, string clientIp)
     {
-        var failures = cache.GetOrCreate(Key(emailRef, clientIp), entry =>
+        lock (_gate)
         {
-            entry.SlidingExpiration = Window;
-            return new Queue<DateTimeOffset>();
-        })!;
-        lock (failures)
-        {
-            failures.Enqueue(DateTimeOffset.UtcNow);
+            if (cache.TryGetValue(Key(emailRef, clientIp), out List<DateTimeOffset>? attempts) && attempts is { Count: > 0 })
+            {
+                attempts.RemoveAt(attempts.Count - 1);
+            }
         }
     }
 

@@ -2,6 +2,7 @@ using System.Text.Json;
 using FEDept.BackendCourse.GroupA1.Api.Template.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -17,8 +18,10 @@ public sealed class DependencyFailureHandlerTests
     public static TheoryData<Exception> DependencyFailures() => new()
     {
         new TokenSigningException(new InvalidOperationException()),
+        new InvalidOperationException("wrapped signing", new TokenSigningException(new InvalidOperationException())),
         new NpgsqlException("connection refused"),
-        new InvalidOperationException("wrapped", new NpgsqlException("connection refused"))
+        new InvalidOperationException("wrapped", new NpgsqlException("connection refused")),
+        new PostgresException("shutdown", "FATAL", "FATAL", PostgresErrorCodes.AdminShutdown)
     };
 
     [Theory]
@@ -36,10 +39,18 @@ public sealed class DependencyFailureHandlerTests
         Assert.Equal("service_unavailable", body.RootElement.GetProperty("code").GetString());
     }
 
-    [Fact]
-    public async Task OtherException_IsNotHandled()
+    public static TheoryData<Exception> OtherExceptions() => new()
     {
-        var handled = await _handler.TryHandleAsync(new DefaultHttpContext(), new InvalidOperationException(), CancellationToken.None);
+        new InvalidOperationException(),
+        new PostgresException("dup", "ERROR", "ERROR", PostgresErrorCodes.UniqueViolation),
+        new DbUpdateException("x", new PostgresException("dup", "ERROR", "ERROR", PostgresErrorCodes.UniqueViolation))
+    };
+
+    [Theory]
+    [MemberData(nameof(OtherExceptions))]
+    public async Task OtherException_IsNotHandled(Exception exception)
+    {
+        var handled = await _handler.TryHandleAsync(new DefaultHttpContext(), exception, CancellationToken.None);
 
         Assert.False(handled);
     }

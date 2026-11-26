@@ -83,7 +83,7 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor
 });
-app.UseExceptionHandler();
+app.UseExceptionHandler(new ExceptionHandlerOptions { SuppressDiagnosticsCallback = _ => false });
 app.UseHttpsRedirection();
 app.UseRouting();
 app.UseRateLimiter();
