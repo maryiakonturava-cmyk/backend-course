@@ -3,3 +3,13 @@
 GET {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/health
 
 ###
+
+### Confirm registration by magic link (copy the token from the link in Mailpit, http://localhost:8025)
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/register/confirm
+Content-Type: application/json
+
+{
+  "token": "token-from-magic-link"
+}
+
+###

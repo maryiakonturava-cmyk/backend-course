@@ -31,7 +31,7 @@ paths:
       summary: Register an account
       description: >-
         Creates an active account when confirmation is disabled, or a pending account
-        and sends an OTP when confirmation is enabled. A duplicate email returns
+        and sends an OTP or a magic link when confirmation is enabled. A duplicate email returns
         409 without account details. The default rate limit is 5 requests per client
         IP per minute; server configuration can change the permit count.
       requestBody:
@@ -55,7 +55,9 @@ paths:
                 email: user@example.com
                 status: active
         '202':
-          description: Confirmation is required; OTP was sent to the supplied email address.
+          description: >-
+            Confirmation is required; an OTP or a magic link (server setting) was sent to the
+            supplied email address. The secret is never part of the response.
           content:
             application/json:
               schema:
@@ -91,12 +93,12 @@ paths:
     post:
       tags: [Registration]
       operationId: resendRegistrationCode
-      summary: Resend registration OTP
+      summary: Resend registration confirmation
       description: >-
-        Sends a new OTP for a pending account. A successful resend resets the code's
-        expiry to 600 seconds and its failed-confirmation count to zero. The default
-        rate limit is 5 requests per client IP per minute; the per-email resend
-        cooldown is 60 seconds. Server configuration can change the permit count.
+        Sends a new OTP or magic link for a pending account, based on server configuration.
+        A successful resend resets expiry to 600 seconds and the failed-confirmation count
+        to zero. The default rate limit is 5 requests per client IP per minute; the per-email
+        resend cooldown is 60 seconds. Server configuration can change the permit count.
       requestBody:
         required: true
         content:
@@ -107,7 +109,7 @@ paths:
               email: user@example.com
       responses:
         '202':
-          description: New OTP was sent.
+          description: A new OTP or magic link was sent, based on server configuration.
           content:
             application/json:
               schema:
@@ -140,19 +142,28 @@ paths:
     post:
       tags: [Registration]
       operationId: confirmRegistration
-      summary: Confirm registration with OTP
+      summary: Confirm registration with OTP or magic link token
       description: >-
-        Activates the pending account when the attempt ID and OTP match. The OTP
-        expires after 600 seconds. Five failed code submissions consume the attempt.
+        Activates the pending account. Send either the attempt ID and OTP, or the
+        magic link token. Both expire after 600 seconds. Five failed code submissions
+        consume an OTP attempt; a magic link token is single-use. Opening the link
+        itself changes nothing; only this POST activates the account.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ConfirmRequest'
-            example:
-              attemptId: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
-              code: '012345'
+            examples:
+              otp:
+                summary: OTP
+                value:
+                  attemptId: 2c4f09ad-610b-4c89-9c35-6df3ab02dbb9
+                  code: '012345'
+              magicLink:
+                summary: Magic link token
+                value:
+                  token: q3Jx0dW9b6m1rQyZ4kFv8sT2nE7pL5cA0hG3uY6iO9w
       responses:
         '200':
           description: Registration confirmed and account activated.
@@ -233,6 +244,10 @@ components:
           description: Email address of the pending account.
           example: user@example.com
     ConfirmRequest:
+      oneOf:
+        - $ref: '#/components/schemas/ConfirmOtpRequest'
+        - $ref: '#/components/schemas/ConfirmTokenRequest'
+    ConfirmOtpRequest:
       type: object
       additionalProperties: false
       required: [attemptId, code]
@@ -245,6 +260,15 @@ components:
           type: string
           pattern: '^[0-9]{6}$'
           description: Six-digit OTP sent to the account email address.
+    ConfirmTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: One-time token from the magic link query string (`?token=`).
     ConfirmationRequiredResponse:
       type: object
       additionalProperties: false
@@ -255,7 +279,7 @@ components:
           const: true
         method:
           type: string
-          const: otp
+          enum: [otp, magic_link]
         attemptId:
           type: string
           format: uuid
