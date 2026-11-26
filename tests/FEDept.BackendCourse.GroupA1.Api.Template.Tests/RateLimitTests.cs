@@ -17,7 +17,7 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests;
 public sealed class RateLimitTests(RegistrationTestFactory factory) : IClassFixture<RegistrationTestFactory>
 {
     [Fact]
-    public async Task Register_ExceedingConfiguredLimit_ReturnsTooManyRequestsAndHealthRemainsAvailable()
+    public async Task Register_ExceedingConfiguredConfirmLimit_RemainsAvailable()
     {
         using var app = factory.WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -30,7 +30,7 @@ public sealed class RateLimitTests(RegistrationTestFactory factory) : IClassFixt
         var registerEndpoint = app.Services.GetRequiredService<IEnumerable<EndpointDataSource>>()
             .SelectMany(source => source.Endpoints)
             .Single(endpoint => endpoint.DisplayName?.Contains("Register (", StringComparison.Ordinal) == true);
-        Assert.NotNull(registerEndpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>());
+        Assert.Null(registerEndpoint.Metadata.GetMetadata<EnableRateLimitingAttribute>());
         using var client = app.CreateClient(new WebApplicationFactoryClientOptions
         {
             BaseAddress = new Uri("https://localhost")
@@ -43,8 +43,31 @@ public sealed class RateLimitTests(RegistrationTestFactory factory) : IClassFixt
 
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
-        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, third.StatusCode);
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resend_ExceedingConfiguredConfirmLimit_RemainsAvailable()
+    {
+        using var app = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Registration:RateLimitPermitPerWindow"] = "2",
+                    ["Registration:ConfirmationEnabled"] = "true",
+                    ["Registration:HmacKey"] = "test-key"
+                })));
+        using var client = app.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        });
+
+        for (var i = 0; i < 3; i++)
+        {
+            using var response = await client.PostAsJsonAsync("/auth/register/resend", new { email = $"missing-{i}@example.com" });
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
     }
 
     [Fact]
