@@ -6,8 +6,9 @@ public sealed record ConfirmRequest(Guid? AttemptId, string? Code, string? Token
 {
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        var isOtp = AttemptId is not null && !string.IsNullOrEmpty(Code) && Token is null;
-        var isLink = AttemptId is null && Code is null && !string.IsNullOrEmpty(Token);
+        var isOtp = AttemptId is not null && !string.IsNullOrWhiteSpace(Code) && Token is null;
+        // 32 random bytes in base64url are always 43 chars
+        var isLink = AttemptId is null && Code is null && Token is { Length: 43 };
         if (!isOtp && !isLink)
         {
             yield return new ValidationResult(

@@ -173,6 +173,21 @@ public sealed class MagicLinkEndpointTests : IClassFixture<RegistrationTestFacto
     }
 
     [Fact]
+    public async Task ConfirmCode_WhitespaceCodeReturnsBadRequestWithoutCountingAttempt()
+    {
+        var (_, challenge) = await SeedChallengeAsync(ChallengeMethod.Otp, "654321", DateTimeOffset.UtcNow.AddMinutes(10));
+
+        using var response = await _client.PostAsJsonAsync("/auth/register/confirm",
+            new { attemptId = challenge.Id, code = "   " });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var saved = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .RegistrationChallenges.SingleAsync(item => item.Id == challenge.Id);
+        Assert.Equal(0, saved.Attempts);
+    }
+
+    [Fact]
     public async Task Confirm_InvalidBodyShapesReturnBadRequest()
     {
         var token = MagicLinkTokenGenerator.Generate();
@@ -184,6 +199,7 @@ public sealed class MagicLinkEndpointTests : IClassFixture<RegistrationTestFacto
             new { attemptId = Guid.NewGuid(), token },
             new { attemptId = Guid.NewGuid() },
             new { token = "" },
+            new { token = new string('a', 10_000) },
             new { }
         ];
 
