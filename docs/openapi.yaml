@@ -95,9 +95,10 @@ paths:
       operationId: resendRegistrationCode
       summary: Resend registration confirmation
       description: >-
-        Sends a new OTP or magic link for a pending account, based on server configuration.
-        A successful resend resets expiry to 600 seconds and the failed-confirmation count
-        to zero. The default rate limit is 5 requests per client IP per minute; the per-email
+        Sends a new OTP or magic link for a pending account, using the method the attempt
+        was issued with (not the current server setting). The previous code or link stops
+        working. A successful resend resets expiry to 600 seconds and the failed-confirmation
+        count to zero. The default rate limit is 5 requests per client IP per minute; the per-email
         resend cooldown is 60 seconds. Server configuration can change the permit count.
       requestBody:
         required: true
@@ -109,7 +110,7 @@ paths:
               email: user@example.com
       responses:
         '202':
-          description: A new OTP or magic link was sent, based on server configuration.
+          description: A new OTP or magic link was sent, matching the attempt's method.
           content:
             application/json:
               schema:
