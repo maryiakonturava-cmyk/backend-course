@@ -27,14 +27,25 @@ public sealed class AuthConfigurationValidator(
             ("Login:ChallengeHmacKey", login.ChallengeHmacKey),
             ("Login:AuditHmacKey", login.AuditHmacKey)
         ];
-        foreach (var key in keys.Where(key => Encoding.UTF8.GetByteCount(key.Value ?? string.Empty) < MinKeyBytes))
+        var shortKeys = keys.Where(key => Encoding.UTF8.GetByteCount(key.Value ?? string.Empty) < MinKeyBytes).ToList();
+        foreach (var key in shortKeys)
         {
             yield return $"{key.Name} must be at least {MinKeyBytes} bytes.";
         }
 
-        if (keys.Select(key => key.Value).Distinct(StringComparer.Ordinal).Count() != keys.Length)
+        if (shortKeys.Count == 0 && keys.Select(key => key.Value).Distinct(StringComparer.Ordinal).Count() != keys.Length)
         {
             yield return "Jwt:AccessSecret, Jwt:RefreshSecret, Login:ChallengeHmacKey and Login:AuditHmacKey must all differ.";
+        }
+
+        if (login.LoginPermitPerMinute <= 0)
+        {
+            yield return "Login:LoginPermitPerMinute must be positive.";
+        }
+
+        if (login.RefreshPermitPerMinute <= 0)
+        {
+            yield return "Login:RefreshPermitPerMinute must be positive.";
         }
 
         if (string.IsNullOrWhiteSpace(jwt.Issuer))
