@@ -88,9 +88,67 @@ public sealed class AuditLoggingTests(RegistrationTestFactory factory) : IClassF
         });
     }
 
+    [Fact]
+    public async Task MagicLinkSendAndConfirm_LogMethodWithoutTokenOrLink()
+    {
+        var provider = new CapturingLoggerProvider();
+        var emailSender = new CapturingEmailSender();
+        using var app = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Registration:ConfirmationEnabled"] = "true",
+                    ["Registration:ConfirmationMethod"] = "MagicLink",
+                    ["Registration:MagicLinkBaseUrl"] = "http://localhost:3000/register/confirm",
+                    ["Registration:HmacKey"] = HmacKey
+                }));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IEmailSender>();
+                services.AddSingleton<IEmailSender>(emailSender);
+            });
+            builder.ConfigureLogging(logging =>
+            {
+                logging.ClearProviders();
+                logging.AddProvider(provider);
+            });
+        });
+        using var client = app.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        });
+
+        const string email = "audit-magic-link@example.com";
+        using var pending = await client.PostAsJsonAsync("/auth/register", new RegisterRequest(email, Password));
+        var link = emailSender.Links.Single(item => item.Email == email).Link;
+        var token = link[(link.IndexOf("token=", StringComparison.Ordinal) + "token=".Length)..];
+        using var confirm = await client.PostAsJsonAsync("/auth/register/confirm", new { token });
+
+        var logs = provider.Messages.ToArray();
+        Assert.Equal(HttpStatusCode.Accepted, pending.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, confirm.StatusCode);
+        Assert.Contains(logs, log => log.Contains("RegistrationCodeSent", StringComparison.Ordinal)
+            && log.Contains(email, StringComparison.Ordinal)
+            && log.Contains("Method=magic_link", StringComparison.Ordinal)
+            && log.Contains("success", StringComparison.Ordinal));
+        Assert.Contains(logs, log => log.Contains("RegistrationConfirm", StringComparison.Ordinal)
+            && log.Contains(email, StringComparison.Ordinal)
+            && log.Contains("success", StringComparison.Ordinal));
+        Assert.All(logs, log =>
+        {
+            Assert.DoesNotContain(token, log, StringComparison.Ordinal);
+            Assert.DoesNotContain(link, log, StringComparison.Ordinal);
+            Assert.DoesNotContain(Password, log, StringComparison.Ordinal);
+            Assert.DoesNotContain(HmacKey, log, StringComparison.Ordinal);
+        });
+    }
+
     private sealed class CapturingEmailSender : IEmailSender
     {
         public ConcurrentQueue<(string Email, string Code)> Messages { get; } = new();
+
+        public ConcurrentQueue<(string Email, string Link)> Links { get; } = new();
 
         public Task SendOtpAsync(string email, string code, CancellationToken ct)
         {
@@ -98,7 +156,11 @@ public sealed class AuditLoggingTests(RegistrationTestFactory factory) : IClassF
             return Task.CompletedTask;
         }
 
-        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) => Task.CompletedTask;
+        public Task SendMagicLinkAsync(string email, string link, CancellationToken ct)
+        {
+            Links.Enqueue((email, link));
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class CapturingLoggerProvider : ILoggerProvider
