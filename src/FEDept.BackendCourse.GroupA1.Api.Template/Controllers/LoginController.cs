@@ -9,7 +9,7 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Controllers;
 
 [ApiController]
 [Route("auth")]
-public sealed class LoginController(LoginService loginService, AuthCookies cookies) : ControllerBase
+public sealed class LoginController(LoginService loginService, AuthCookies cookies, AuthAudit audit) : ControllerBase
 {
     [HttpPost("login")]
     [EnableRateLimiting("login")]
@@ -31,6 +31,29 @@ public sealed class LoginController(LoginService loginService, AuthCookies cooki
             LoginResult.TooManyRequests tooMany => TooManyRequests(tooMany.RetryAfterSeconds),
             _ => throw new InvalidOperationException("Unknown login result.")
         };
+    }
+
+    [HttpPost("refresh")]
+    [EnableRateLimiting("refresh")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(RetryAfterResponse), StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> Refresh(CancellationToken ct)
+    {
+        var tokens = await loginService.RefreshAsync(Request.Cookies[AuthCookies.RefreshCookie], ct);
+        return tokens is null ? Unauthorized(ErrorResponses.InvalidSession) : SignedIn(tokens);
+    }
+
+    [HttpPost("logout")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
+    public IActionResult Logout()
+    {
+        cookies.Clear(Response);
+        audit.Logout();
+        return NoContent();
     }
 
     private NoContentResult SignedIn(TokenPair tokens)

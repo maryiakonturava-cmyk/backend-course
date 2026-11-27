@@ -53,6 +53,28 @@ public sealed class LoginService(
         audit.Login(user.Id, null, "success");
         return new LoginResult.SignedIn(pair);
     }
+
+    public async Task<TokenPair?> RefreshAsync(string? refreshToken, CancellationToken ct)
+    {
+        var validation = await tokens.ValidateAsync(refreshToken, TokenUse.Refresh);
+        if (validation is TokenValidation.Fail fail)
+        {
+            audit.Refresh(null, "failure", fail.Category);
+            return null;
+        }
+
+        var userId = ((TokenValidation.Ok)validation).UserId;
+        if (!await db.Users.AsNoTracking().AnyAsync(user => user.Id == userId && user.Status == UserStatus.Active, ct))
+        {
+            audit.Refresh(userId, "failure", "user_inactive");
+            return null;
+        }
+
+        // stateless: the used refresh token is not stored or denylisted
+        var pair = tokens.Issue(userId);
+        audit.Refresh(userId, "success", null);
+        return pair;
+    }
 }
 
 public abstract record LoginResult
