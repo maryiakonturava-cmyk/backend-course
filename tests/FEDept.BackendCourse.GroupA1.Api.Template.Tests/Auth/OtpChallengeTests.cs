@@ -306,6 +306,70 @@ public sealed class OtpChallengeTests : IClassFixture<RegistrationTestFactory>, 
         Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
     }
 
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"attemptId\":null}")]
+    public async Task Resend_InvalidFormat_Returns400(string json)
+    {
+        using var response = await _client.PostAsync("/auth/login/resend", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resend_UserBlockedMidChallenge_Returns401WithoutEmail()
+    {
+        var (email, userId, attemptId) = await StartAsync();
+        await SetStatusAsync(_app.Services, userId, UserStatus.Blocked);
+        await AgeChallengeAsync(_app.Services, attemptId, TimeSpan.FromSeconds(61));
+
+        using var resend = await ResendAsync(attemptId);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, resend.StatusCode);
+        var body = await resend.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("invalid_credentials", body.GetProperty("code").GetString());
+        Assert.Equal(1, _sender.CountFor(email));
+        Assert.Equal(ConsumedReason.UserInactive, (await GetChallengeAsync(_app.Services, attemptId)).ConsumedReason);
+    }
+
+    // the row lock must serialize the counter: 5 wrong entries count, the rest see the exhausted attempt
+    [Fact]
+    public async Task ConcurrentWrongConfirms_CounterExact()
+    {
+        var (email, _, attemptId) = await StartAsync();
+        var wrong = WrongCode(_sender.LastFor(email));
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => ConfirmAsync(attemptId, wrong)));
+
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        foreach (var response in responses)
+        {
+            response.Dispose();
+        }
+
+        Assert.Equal(5, statuses.Count(status => status == HttpStatusCode.BadRequest));
+        Assert.Equal(7, statuses.Count(status => status == HttpStatusCode.TooManyRequests));
+        Assert.Equal(5, (await GetChallengeAsync(_app.Services, attemptId)).Attempts);
+    }
+
+    [Fact]
+    public async Task ConcurrentCorrectConfirms_SingleUse()
+    {
+        var (email, _, attemptId) = await StartAsync();
+        var code = _sender.LastFor(email);
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => ConfirmAsync(attemptId, code)));
+
+        var statuses = responses.Select(response => response.StatusCode).ToArray();
+        foreach (var response in responses)
+        {
+            response.Dispose();
+        }
+
+        Assert.Equal(1, statuses.Count(status => status == HttpStatusCode.NoContent));
+        Assert.Equal(9, statuses.Count(status => status == HttpStatusCode.BadRequest));
+    }
+
     [Fact]
     public async Task Resend_KeepsTheStoredMethodAfterConfigurationChanges()
     {

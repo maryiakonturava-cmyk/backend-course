@@ -106,7 +106,7 @@ public sealed class LoginService(
             return LoginConfirmResult.Exhausted.Instance;
         }
 
-        if (challenge is null || challenge.ConsumedAt is not null || challenge.Method != method)
+        if (challenge is null || challenge.ConsumedAt is not null)
         {
             audit.Challenge(userId, attemptId, method, "rejected");
             return LoginConfirmResult.Invalid.Instance;
@@ -116,6 +116,12 @@ public sealed class LoginService(
         if (challenge.LastSentAt + ChallengeLifetime <= now)
         {
             audit.Challenge(userId, attemptId, method, "expired");
+            return LoginConfirmResult.Invalid.Instance;
+        }
+
+        if (challenge.Method != method)
+        {
+            audit.Challenge(userId, attemptId, method, "rejected");
             return LoginConfirmResult.Invalid.Instance;
         }
 
