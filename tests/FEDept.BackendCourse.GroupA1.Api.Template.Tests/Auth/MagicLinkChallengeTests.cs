@@ -36,7 +36,13 @@ public sealed class MagicLinkChallengeTests : IClassFixture<RegistrationTestFact
         var body = await login.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("magic_link", body.GetProperty("method").GetString());
         var link = _sender.LastFor(email);
-        return (email, body.GetProperty("attemptId").GetGuid(), link[(link.IndexOf("#token=", StringComparison.Ordinal) + 7)..]);
+        return (email, body.GetProperty("attemptId").GetGuid(), TokenFromLink(link));
+    }
+
+    private static string TokenFromLink(string link)
+    {
+        Assert.Contains("#token=", link, StringComparison.Ordinal);
+        return link[(link.IndexOf("#token=", StringComparison.Ordinal) + 7)..];
     }
 
     private Task<HttpResponseMessage> ConfirmAsync(string token) =>
@@ -66,6 +72,8 @@ public sealed class MagicLinkChallengeTests : IClassFixture<RegistrationTestFact
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         AssertSessionCookies(response);
         Assert.Equal(ConsumedReason.Confirmed, (await GetChallengeAsync(_app.Services, attemptId)).ConsumedReason);
+        using var replay = await ConfirmAsync(token);
+        Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode);
     }
 
     [Fact]
@@ -88,11 +96,16 @@ public sealed class MagicLinkChallengeTests : IClassFixture<RegistrationTestFact
     [Fact]
     public async Task Confirm_OtpShapeForLinkAttempt_Returns400()
     {
-        var (_, attemptId, _) = await StartAsync();
+        var (_, attemptId, token) = await StartAsync();
 
         using var response = await _client.PostAsJsonAsync("/auth/login/confirm", new { attemptId, code = "123456" });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var challenge = await GetChallengeAsync(_app.Services, attemptId);
+        Assert.Equal(0, challenge.Attempts);
+        Assert.Null(challenge.ConsumedAt);
+        using var valid = await ConfirmAsync(token);
+        Assert.Equal(HttpStatusCode.NoContent, valid.StatusCode);
     }
 
     [Theory]
@@ -115,6 +128,9 @@ public sealed class MagicLinkChallengeTests : IClassFixture<RegistrationTestFact
         using var response = await ConfirmAsync(token);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var challenge = await GetChallengeAsync(_app.Services, attemptId);
+        Assert.Null(challenge.ConsumedAt);
+        Assert.Equal(0, challenge.Attempts);
     }
 
     [Fact]
@@ -128,7 +144,7 @@ public sealed class MagicLinkChallengeTests : IClassFixture<RegistrationTestFact
         Assert.Equal(HttpStatusCode.Accepted, resend.StatusCode);
         Assert.Equal("magic_link", (await resend.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("method").GetString());
         var link = _sender.LastFor(email);
-        var newToken = link[(link.IndexOf("#token=", StringComparison.Ordinal) + 7)..];
+        var newToken = TokenFromLink(link);
         using var old = await ConfirmAsync(oldToken);
         Assert.Equal(HttpStatusCode.BadRequest, old.StatusCode);
         using var fresh = await ConfirmAsync(newToken);
