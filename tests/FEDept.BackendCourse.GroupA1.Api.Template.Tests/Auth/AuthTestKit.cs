@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
+using System.Text;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
@@ -11,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -151,6 +153,43 @@ internal static class AuthTestKit
             Assert.Contains("httponly", header, StringComparison.Ordinal);
             Assert.Contains($"samesite={sameSite}", header, StringComparison.Ordinal);
             Assert.DoesNotContain("domain=", header, StringComparison.Ordinal);
+        }
+    }
+}
+
+// IsEnabled is true for every category so the hosting RequestId scope is created; only AuthAudit lines are kept
+public sealed class CapturingLoggerProvider : ILoggerProvider, ISupportExternalScope
+{
+    private IExternalScopeProvider _scopes = new LoggerExternalScopeProvider();
+
+    public ConcurrentQueue<string> Messages { get; } = new();
+
+    public ILogger CreateLogger(string categoryName) =>
+        new CapturingLogger(this, categoryName == typeof(AuthAudit).FullName);
+
+    public void SetScopeProvider(IExternalScopeProvider scopeProvider) => _scopes = scopeProvider;
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class CapturingLogger(CapturingLoggerProvider provider, bool capture) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => provider._scopes.Push(state);
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (!capture)
+            {
+                return;
+            }
+
+            var line = new StringBuilder(formatter(state, exception));
+            provider._scopes.ForEachScope((scope, builder) => builder.Append(" | ").Append(scope), line);
+            provider.Messages.Enqueue(line.ToString());
         }
     }
 }
