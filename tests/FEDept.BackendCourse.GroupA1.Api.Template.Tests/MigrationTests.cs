@@ -4,6 +4,7 @@ using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Xunit;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests;
@@ -16,7 +17,7 @@ public sealed class MigrationTests(RegistrationTestFactory factory) : IClassFixt
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.True(await db.Database.CanConnectAsync());
-        Assert.Empty(await db.Users.ToListAsync());
+        await db.Users.AnyAsync();
     }
 
     [Fact]
@@ -51,6 +52,8 @@ public sealed class MigrationTests(RegistrationTestFactory factory) : IClassFixt
 
         db.LoginChallenges.Add(Challenge(null));
 
-        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        var postgresException = Assert.IsType<PostgresException>(exception.InnerException);
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, postgresException.SqlState);
     }
 }
