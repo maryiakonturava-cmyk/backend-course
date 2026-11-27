@@ -46,11 +46,12 @@ builder.Services.AddRateLimiter(options =>
             : 60;
         http.Response.Headers.RetryAfter = retryAfter.ToString(CultureInfo.InvariantCulture);
         var audit = http.RequestServices.GetRequiredService<AuthAudit>();
-        if (http.Request.Path.Equals("/auth/login", StringComparison.OrdinalIgnoreCase))
+        var policy = http.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName;
+        if (policy == "login")
         {
             audit.Login(null, null, "rate_limited_ip");
         }
-        else if (http.Request.Path.Equals("/auth/refresh", StringComparison.OrdinalIgnoreCase))
+        else if (policy == "refresh")
         {
             audit.Refresh(null, "failure", "rate_limited_ip");
         }

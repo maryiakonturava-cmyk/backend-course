@@ -109,6 +109,28 @@ public sealed class DirectLoginTests(RegistrationTestFactory factory) : IClassFi
     }
 
     [Fact]
+    public async Task Login_SuccessDoesNotResetFailures()
+    {
+        using var client = CreateClient(factory);
+        var email = NewEmail();
+        await CreateUserAsync(factory.Services, email);
+        for (var i = 0; i < 4; i++)
+        {
+            using var failed = await LoginAsync(client, email, "wrong password 1");
+            Assert.Equal(HttpStatusCode.Unauthorized, failed.StatusCode);
+        }
+
+        using var success = await LoginAsync(client, email);
+        Assert.Equal(HttpStatusCode.NoContent, success.StatusCode);
+        using var failedAfterSuccess = await LoginAsync(client, email, "wrong password 1");
+        Assert.Equal(HttpStatusCode.Unauthorized, failedAfterSuccess.StatusCode);
+
+        using var blocked = await LoginAsync(client, email);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
+    }
+
+    [Fact]
     public async Task Login_ThirtyFirstRequestPerMinuteFromOneIp_Returns429()
     {
         using var app = factory.WithSettings(new Dictionary<string, string?> { ["Login:LoginPermitPerMinute"] = "30" });
