@@ -6,6 +6,7 @@ using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -79,6 +80,18 @@ builder.Services.AddScoped<LoginService>();
 builder.Services.AddAuthentication(AccessCookieAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, AccessCookieAuthenticationHandler>(AccessCookieAuthenticationHandler.SchemeName, null);
 builder.Services.AddAuthorization();
+builder.Services.AddCors();
+builder.Services.AddOptions<CorsOptions>().Configure<IOptions<FrontendOptions>>((cors, frontend) =>
+{
+    if (frontend.Value.Origin.Length > 0)
+    {
+        cors.AddDefaultPolicy(policy => policy
+            .WithOrigins(frontend.Value.Origin)
+            .AllowCredentials()
+            .WithHeaders("Content-Type", CsrfMiddleware.HeaderName)
+            .WithMethods("GET", "POST"));
+    }
+});
 builder.Services.AddExceptionHandler<DependencyFailureHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<RegistrationService>();
@@ -108,11 +121,18 @@ if (app.Environment.IsDevelopment())
 // shortcut: KnownProxies/KnownNetworks not configured — set before production
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 });
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseMiddleware<HttpsOnlyMiddleware>();
+}
 app.UseExceptionHandler(new ExceptionHandlerOptions { SuppressDiagnosticsCallback = _ => false });
 app.UseHttpsRedirection();
 app.UseRouting();
+app.UseCors();
+app.UseMiddleware<CsrfMiddleware>();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

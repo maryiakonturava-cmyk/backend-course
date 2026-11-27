@@ -1,0 +1,143 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Xunit;
+using static FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth.AuthTestKit;
+
+namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth;
+
+public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IClassFixture<RegistrationTestFactory>
+{
+    private const string Frontend = "https://app.example.test";
+
+    private WebApplicationFactory<Program> WithFrontend(bool crossSite = false) =>
+        factory.WithSettings(new Dictionary<string, string?>
+        {
+            ["Frontend:Origin"] = Frontend,
+            ["Frontend:CrossSite"] = crossSite ? "true" : "false"
+        });
+
+    private static Task<HttpResponseMessage> PostAsync(HttpClient client, string path, string? origin, bool csrfHeader = false, object? body = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = body is null ? null : JsonContent.Create(body) };
+        if (origin is not null)
+        {
+            request.Headers.Add("Origin", origin);
+        }
+
+        if (csrfHeader)
+        {
+            request.Headers.Add("X-CSRF-Protection", "1");
+        }
+
+        return client.SendAsync(request);
+    }
+
+    private static async Task AssertCsrfRejectedAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("csrf_rejected", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("https://localhost")]
+    public async Task Post_WithoutOriginOrFromOwnOrigin_Passes(string? origin)
+    {
+        using var client = CreateClient(factory);
+
+        using var response = await PostAsync(client, "/auth/logout", origin);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("/auth/logout")]
+    [InlineData("/auth/refresh")]
+    [InlineData("/auth/login")]
+    [InlineData("/auth/register")]
+    public async Task Post_FromForeignOrigin_Returns403(string path)
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        using var response = await PostAsync(client, path, "https://evil.example", csrfHeader: true);
+
+        await AssertCsrfRejectedAsync(response);
+    }
+
+    [Fact]
+    public async Task Post_FromTrustedOriginWithoutHeader_Returns403()
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        using var response = await PostAsync(client, "/auth/logout", Frontend);
+
+        await AssertCsrfRejectedAsync(response);
+    }
+
+    [Fact]
+    public async Task Post_FromTrustedOriginWithHeader_PassesWithCorsHeaders()
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        using var response = await PostAsync(client, "/auth/logout", Frontend, csrfHeader: true);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(Frontend, Assert.Single(response.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.Equal("true", Assert.Single(response.Headers.GetValues("Access-Control-Allow-Credentials")));
+    }
+
+    [Fact]
+    public async Task Preflight_TrustedOrigin_IsAllowed_ForeignOriginIsNot()
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        HttpRequestMessage Preflight(string origin)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Options, "/auth/login");
+            request.Headers.Add("Origin", origin);
+            request.Headers.Add("Access-Control-Request-Method", "POST");
+            request.Headers.Add("Access-Control-Request-Headers", "content-type,x-csrf-protection");
+            return request;
+        }
+
+        using var trusted = await client.SendAsync(Preflight(Frontend));
+        using var foreign = await client.SendAsync(Preflight("https://evil.example"));
+
+        Assert.Equal(Frontend, Assert.Single(trusted.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.Equal("true", Assert.Single(trusted.Headers.GetValues("Access-Control-Allow-Credentials")));
+        Assert.False(foreign.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
+    public async Task CrossSiteFrontend_SwitchesCookiesToSameSiteNone()
+    {
+        using var app = WithFrontend(crossSite: true);
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        await CreateUserAsync(app.Services, email);
+
+        using var response = await PostAsync(client, "/auth/login", Frontend, csrfHeader: true, new { email, password = Password });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        AssertSessionCookies(response, sameSite: "none");
+    }
+
+    [Fact]
+    public async Task PlainHttpOutsideDevelopment_Returns400HttpsRequired()
+    {
+        using var app = factory.WithWebHostBuilder(builder => builder.UseEnvironment("Production"));
+        using var client = CreateClient(app, "http://localhost");
+
+        using var response = await client.PostAsJsonAsync("/auth/login", new { email = "user@example.com", password = "x" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("https_required", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+}
