@@ -5,6 +5,8 @@ using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -24,6 +26,14 @@ public sealed class AccessCookieAuthenticationHandler(
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
+        // Only [Authorize] endpoints need the DB-backed check; anonymous ones must keep working during DB outages.
+        var endpoint = Context.GetEndpoint();
+        if (endpoint?.Metadata.GetMetadata<IAuthorizeData>() is null
+            || endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+        {
+            return AuthenticateResult.NoResult();
+        }
+
         var token = Request.Cookies[AuthCookies.AccessCookie];
         if (string.IsNullOrEmpty(token))
         {

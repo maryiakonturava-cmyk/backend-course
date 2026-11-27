@@ -29,9 +29,15 @@ public sealed class SessionTests(RegistrationTestFactory factory) : IClassFixtur
         Assert.Equal("invalid_session", body.GetProperty("code").GetString());
     }
 
-    private WebApplicationFactory<Program> WithProtectedRoute() =>
-        factory.WithSettings(new Dictionary<string, string?>(), services =>
+    private WebApplicationFactory<Program> WithProtectedRoute(Dictionary<string, string?>? settings = null) =>
+        factory.WithSettings(settings ?? new Dictionary<string, string?>(), services =>
             services.AddControllers().AddApplicationPart(typeof(ProtectedTestController).Assembly));
+
+    private static Dictionary<string, string?> DatabaseUnavailableSettings() => new()
+    {
+        ["ConnectionStrings:Default"] = "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=2",
+        ["Database:ApplyMigrations"] = "false"
+    };
 
     private static Task<HttpResponseMessage> GetProtectedAsync(HttpClient client, string? cookie)
     {
@@ -265,13 +271,36 @@ public sealed class SessionTests(RegistrationTestFactory factory) : IClassFixtur
     }
 
     [Fact]
+    public async Task Logout_ValidAccessCookieAndUnavailableDatabase_ClearsBothCookies()
+    {
+        using var app = factory.WithSettings(DatabaseUnavailableSettings());
+        using var client = CreateClient(app);
+        var token = app.Services.GetRequiredService<JwtTokenService>().Issue(Guid.NewGuid()).AccessToken;
+
+        using var response = await PostWithCookieAsync(client, "/auth/logout", $"access_token={token}");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+        Assert.StartsWith("access_token=;", SetCookie(response, "access_token"), StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith("refresh_token=;", SetCookie(response, "refresh_token"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Access_DatabaseUnavailable_Returns503()
+    {
+        using var app = WithProtectedRoute(DatabaseUnavailableSettings());
+        using var client = CreateClient(app);
+        var token = app.Services.GetRequiredService<JwtTokenService>().Issue(Guid.NewGuid()).AccessToken;
+
+        using var response = await GetProtectedAsync(client, $"access_token={token}");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
     public async Task DatabaseUnavailable_LoginAndRefreshReturn503()
     {
-        using var app = factory.WithSettings(new Dictionary<string, string?>
-        {
-            ["ConnectionStrings:Default"] = "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none;Timeout=2",
-            ["Database:ApplyMigrations"] = "false"
-        });
+        using var app = factory.WithSettings(DatabaseUnavailableSettings());
         using var client = CreateClient(app);
         var token = app.Services.GetRequiredService<JwtTokenService>().Issue(Guid.NewGuid()).RefreshToken;
 
