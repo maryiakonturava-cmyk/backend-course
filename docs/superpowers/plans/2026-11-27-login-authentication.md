@@ -2898,7 +2898,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Contracts;
 
-public sealed record LoginResendRequest([property: Required] Guid? AttemptId);
+public sealed record LoginResendRequest([Required] Guid? AttemptId);
 ```
 
 - [ ] **Step 5: Rewrite `LoginService` with the challenge flow**
@@ -4665,6 +4665,8 @@ Add a section at the end of `docs/superpowers/specs/2026-11-26-login-authenticat
 - The IP rate limiter runs before model validation, so malformed requests count toward the 30 per minute.
 - The failed-login limiter reserves a slot before BCrypt and releases it on success or outage, so concurrent guesses cannot exceed 5.
 - The access-cookie handler skips endpoints without `[Authorize]`, so anonymous routes (logout, health) never query users and keep working during a database outage.
+- Confirm and resend return two 400 shapes: `ValidationProblemDetails` for a malformed body and `ErrorResponse` `invalid_challenge` for a rejected challenge. `docs/openapi.yaml` documents both.
+- `too_many_requests` has two fixed messages: one for the IP and failed-login limits, one for exhausted OTP entries.
 ```
 
 - [ ] **Step 9: Final verification**
