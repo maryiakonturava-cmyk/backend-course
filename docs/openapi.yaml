@@ -33,8 +33,7 @@ paths:
       description: >-
         Creates an active account when confirmation is disabled, or a pending account
         and sends an OTP or a magic link when confirmation is enabled. A duplicate email returns
-        409 without account details. The default rate limit is 5 requests per client
-        IP per minute; server configuration can change the permit count.
+        409 without account details.
       requestBody:
         required: true
         content:
@@ -70,8 +69,7 @@ paths:
                 expiresInSeconds: 600
                 resendAfterSeconds: 60
         '400':
-          $ref: '#/components/responses/HttpsRequired'
-          description: Некорректный email или пароль не проходит политику.
+          $ref: '#/components/responses/RegistrationBadRequest'
         '409':
           description: Email уже зарегистрирован или ожидает подтверждения.
           content:
@@ -84,8 +82,6 @@ paths:
                 status: 409
         '403':
           $ref: '#/components/responses/CsrfRejected'
-        '429':
-          $ref: '#/components/responses/RateLimited'
         '503':
           description: Письмо не отправлено. Запись pending и попытка подтверждения сохранены.
           content:
@@ -101,8 +97,7 @@ paths:
         Sends a new OTP or magic link for a pending account, using the method the attempt
         was issued with (not the current server setting). The previous code or link stops
         working. A successful resend resets expiry to 600 seconds and the failed-confirmation
-        count to zero. The default rate limit is 5 requests per client IP per minute; the per-email
-        resend cooldown is 60 seconds. Server configuration can change the permit count.
+        count to zero. The per-email resend cooldown is 60 seconds.
       requestBody:
         required: true
         content:
@@ -119,8 +114,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConfirmationRequiredResponse'
         '400':
-          $ref: '#/components/responses/HttpsRequired'
-          description: Некорректный email.
+          $ref: '#/components/responses/RegistrationBadRequest'
         '403':
           $ref: '#/components/responses/CsrfRejected'
         '404':
@@ -130,17 +124,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: >-
-            Returned for the per-email resend cooldown or the IP limit. IP limiter responses include
-            RetryAfterResponse and the Retry-After header. The default IP limit is 5 requests per minute.
-          headers:
-            Retry-After:
-              schema:
-                type: integer
+          description: Resend requested during the 60-second cooldown.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: '#/components/schemas/RetryAfterResponse'
+                $ref: '#/components/schemas/ProblemDetails'
         '503':
           description: Письмо не отправлено. Запись pending и попытка подтверждения сохранены.
           content:
@@ -185,18 +173,20 @@ paths:
                 email: user@example.com
                 status: active
         '400':
-          $ref: '#/components/responses/HttpsRequired'
+          $ref: '#/components/responses/RegistrationBadRequest'
         '403':
           $ref: '#/components/responses/CsrfRejected'
         '429':
-          description: >-
-            Exhausted OTP attempts return 429; IP rate-limit rejections include RetryAfterResponse
-            and Retry-After.
+          description: Exhausted OTP attempts return ProblemDetails; IP limiter rejections return RetryAfterResponse.
           headers:
             Retry-After:
+              description: IP limit only.
               schema:
                 type: integer
           content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
             application/json:
               schema:
                 $ref: '#/components/schemas/RetryAfterResponse'
@@ -405,6 +395,36 @@ components:
             errors:
               password:
                 - Password must be at least 8 characters, include a letter and a digit, and use no more than 72 UTF-8 bytes.
+    RegistrationBadRequest:
+      description: >-
+        Invalid registration bodies or challenges return ProblemDetails or ValidationProblemDetails;
+        plain HTTP outside Development returns ErrorResponse with https_required.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: https_required
+            message: Use HTTPS.
+        application/problem+json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ProblemDetails'
+              - $ref: '#/components/schemas/ValidationProblem'
+          examples:
+            invalidChallenge:
+              summary: Invalid, expired, or consumed attempt
+              value:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                title: Bad Request
+                status: 400
+            invalidBody:
+              summary: Invalid request body
+              value:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                title: One or more validation errors occurred.
+                status: 400
+                errors: {}
     RateLimited:
       description: Registration IP limit exceeded; default is 5 requests per minute.
       headers:
@@ -459,21 +479,23 @@ components:
           schema:
             $ref: '#/components/schemas/ValidationProblem'
     HttpsRequired:
-      description: >-
-        Plain HTTP requests to /auth/* are rejected outside Development before reading the body.
-        Malformed requests may return ValidationProblemDetails; invalid registration challenges may return an empty 400.
+      description: Plain HTTP requests to authentication endpoints are rejected outside Development.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    const: https_required
+                  message:
+                    const: Use HTTPS.
           example:
             code: https_required
             message: Use HTTPS.
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/ValidationProblem'
     LoginBadRequest:
-      description: Malformed request JSON returns ValidationProblemDetails; plain HTTP returns https_required outside Development.
+      description: Malformed or invalid body returns ValidationProblemDetails; plain HTTP returns https_required outside Development.
       content:
         application/json:
           schema:
