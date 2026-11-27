@@ -100,7 +100,7 @@ builder.Services.AddScoped<RegistrationService>();
 builder.Services.AddSingleton<SmtpEmailSender>();
 builder.Services.AddSingleton<IEmailSender>(services => services.GetRequiredService<SmtpEmailSender>());
 builder.Services.AddSingleton<ILoginEmailSender>(services => services.GetRequiredService<SmtpEmailSender>());
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddJsonOptions(options => options.AllowInputFormatterExceptionMessages = false);
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

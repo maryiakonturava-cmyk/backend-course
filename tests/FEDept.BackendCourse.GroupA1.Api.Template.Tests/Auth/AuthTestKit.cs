@@ -157,15 +157,14 @@ internal static class AuthTestKit
     }
 }
 
-// IsEnabled is true for every category so the hosting RequestId scope is created; only AuthAudit lines are kept
+// Capture every category and scope so secret checks also cover framework and database logs.
 public sealed class CapturingLoggerProvider : ILoggerProvider, ISupportExternalScope
 {
     private IExternalScopeProvider _scopes = new LoggerExternalScopeProvider();
 
     public ConcurrentQueue<string> Messages { get; } = new();
 
-    public ILogger CreateLogger(string categoryName) =>
-        new CapturingLogger(this, categoryName == typeof(AuthAudit).FullName);
+    public ILogger CreateLogger(string categoryName) => new CapturingLogger(this, categoryName);
 
     public void SetScopeProvider(IExternalScopeProvider scopeProvider) => _scopes = scopeProvider;
 
@@ -173,7 +172,7 @@ public sealed class CapturingLoggerProvider : ILoggerProvider, ISupportExternalS
     {
     }
 
-    private sealed class CapturingLogger(CapturingLoggerProvider provider, bool capture) : ILogger
+    private sealed class CapturingLogger(CapturingLoggerProvider provider, string categoryName) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => provider._scopes.Push(state);
 
@@ -182,12 +181,7 @@ public sealed class CapturingLoggerProvider : ILoggerProvider, ISupportExternalS
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (!capture)
-            {
-                return;
-            }
-
-            var line = new StringBuilder(formatter(state, exception));
+            var line = new StringBuilder(categoryName).Append(" | ").Append(formatter(state, exception));
             provider._scopes.ForEachScope((scope, builder) => builder.Append(" | ").Append(scope), line);
             provider.Messages.Enqueue(line.ToString());
         }

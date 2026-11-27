@@ -18,7 +18,7 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth;
 
 public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixture<RegistrationTestFactory>
 {
-    private (WebApplicationFactory<Program> App, CapturingLoggerProvider Logs, CapturingLoginEmailSender Sender) Create(bool challenge)
+    private (WebApplicationFactory<Program> App, CapturingLoggerProvider Logs, CapturingLoginEmailSender Sender) Create(bool challenge, string method = "Otp")
     {
         var logs = new CapturingLoggerProvider();
         var sender = new CapturingLoginEmailSender();
@@ -27,6 +27,7 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Login:ConfirmationEnabled"] = challenge ? "true" : "false",
+                ["Login:ConfirmationMethod"] = method,
                 ["Frontend:Origin"] = "https://app.example.test"
             }));
             builder.ConfigureTestServices(services =>
@@ -53,7 +54,6 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
                 Assert.DoesNotContain(secret, line, StringComparison.Ordinal);
             }
 
-            Assert.DoesNotContain("@", line, StringComparison.Ordinal);
         });
     }
 
@@ -93,14 +93,17 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
         Assert.Contains(lines, line => line.Contains("EventName=AccessRejected", StringComparison.Ordinal) && line.Contains("Category=missing", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("EventName=Logout", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("EventName=CsrfRejected", StringComparison.Ordinal) && line.Contains("Category=origin", StringComparison.Ordinal));
-        Assert.All(lines, line => Assert.Contains("RequestId:", line, StringComparison.Ordinal));
-        AssertNoSecrets(lines, Password, "wrong password 1", access, refresh);
+        var auditLines = lines.Where(line => line.Contains("EventName=", StringComparison.Ordinal)).ToArray();
+        Assert.All(auditLines, line => Assert.Contains("RequestId:", line, StringComparison.Ordinal));
+        AssertNoSecrets(lines, email, unknownEmail, Password, "wrong password 1", access, refresh);
     }
 
-    [Fact]
-    public async Task Challenge_LogsLifecycleWithoutCode()
+    [Theory]
+    [InlineData("Otp")]
+    [InlineData("MagicLink")]
+    public async Task Challenge_LogsLifecycleWithoutCode(string method)
     {
-        var (app, logs, sender) = Create(challenge: true);
+        var (app, logs, sender) = Create(challenge: true, method);
         using var _app = app;
         using var client = CreateClient(app);
         var email = NewEmail();
@@ -108,20 +111,50 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
 
         using var login = await LoginAsync(client, email);
         var attemptId = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("attemptId").GetGuid();
-        var code = sender.LastFor(email);
-        using var wrong = await client.PostAsJsonAsync("/auth/login/confirm", new { attemptId, code = code == "000000" ? "111111" : "000000" });
-        using var confirm = await client.PostAsJsonAsync("/auth/login/confirm", new { attemptId, code });
+        string? code = null;
+        string? token = null;
+        string? tokenSecret = null;
+        if (method == "Otp")
+        {
+            code = sender.LastFor(email);
+        }
+        else
+        {
+            var link = sender.LastFor(email);
+            token = link[(link.IndexOf("#token=", StringComparison.Ordinal) + 7)..];
+            tokenSecret = token[(token.IndexOf('.') + 1)..];
+        }
+
+        using var wrong = method == "Otp"
+            ? await client.PostAsJsonAsync("/auth/login/confirm", new { attemptId, code = code == "000000" ? "111111" : "000000" })
+            : await client.PostAsJsonAsync("/auth/login/confirm", new { token = $"{attemptId}.{(tokenSecret![0] == 'A' ? 'B' : 'A')}{tokenSecret[1..]}" });
+        using var confirm = method == "Otp"
+            ? await client.PostAsJsonAsync("/auth/login/confirm", new { attemptId, code })
+            : await client.PostAsJsonAsync("/auth/login/confirm", new { token });
 
         Assert.Equal(HttpStatusCode.NoContent, confirm.StatusCode);
         var lines = logs.Messages.Where(line => line.Contains("EventName=LoginChallenge", StringComparison.Ordinal)).ToArray();
+        var contractMethod = method == "Otp" ? "otp" : "magic_link";
         foreach (var outcome in new[] { "created", "wrong_entry", "confirmed" })
         {
             Assert.Contains(lines, line => line.Contains($"Outcome={outcome}", StringComparison.Ordinal)
                 && line.Contains($"AttemptId={attemptId}", StringComparison.Ordinal)
-                && line.Contains("Method=otp", StringComparison.Ordinal));
+                && line.Contains($"Method={contractMethod}", StringComparison.Ordinal));
         }
 
-        AssertNoSecrets(logs.Messages, Password, $"={code}", $" {code} ");
+        var secrets = new List<string> { email, Password, CookieValue(confirm, "access_token"), CookieValue(confirm, "refresh_token") };
+        if (code is not null)
+        {
+            secrets.Add(code);
+        }
+
+        if (token is not null)
+        {
+            secrets.Add(token);
+            secrets.Add(tokenSecret!);
+        }
+
+        AssertNoSecrets(logs.Messages, secrets.ToArray());
     }
 
     [Fact]
@@ -139,10 +172,6 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
         Assert.NotEqual(first, otherKey);
         Assert.DoesNotContain(email, first);
     }
-
-    private static AuthAudit CreateAudit(string key) => new(
-        NullLogger<AuthAudit>.Instance,
-        Options.Create(new LoginOptions { AuditHmacKey = key }));
 
     [Fact]
     public async Task OtpChallenge_MagicLinkShapeIsRejectedWithoutAttemptOrWrongEntryAudit()
@@ -168,4 +197,8 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
         Assert.Contains(attemptLines, line => line.Contains("Outcome=rejected", StringComparison.Ordinal));
         Assert.DoesNotContain(attemptLines, line => line.Contains("Outcome=wrong_entry", StringComparison.Ordinal));
     }
+
+    private static AuthAudit CreateAudit(string key) => new(
+        NullLogger<AuthAudit>.Instance,
+        Options.Create(new LoginOptions { AuditHmacKey = key }));
 }
