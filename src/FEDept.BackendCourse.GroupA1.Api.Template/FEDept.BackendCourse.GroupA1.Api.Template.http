@@ -1,4 +1,5 @@
 @FEDept.BackendCourse.GroupA1.Api.Template_HostAddress = http://localhost:5117
+@HttpsHostAddress = https://localhost:7135
 
 GET {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/health
 
@@ -9,7 +10,49 @@ POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/register/con
 Content-Type: application/json
 
 {
-  "token": "token-from-magic-link"
+  "token": "replace-with-registration-token"
 }
 
+### Sign in (cookies are kept by the client between requests)
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "replace-with-password"
+}
+
+### Confirm sign-in with the OTP from Mailpit (http://localhost:8025)
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/confirm
+Content-Type: application/json
+
+{
+  "attemptId": "replace-with-attempt-id",
+  "code": "replace-with-6-digit-code"
+}
+
+### Confirm sign-in with the token after #token= in the magic link
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/confirm
+Content-Type: application/json
+
+{
+  "token": "replace-with-attempt-id-and-secret"
+}
+
+### Send a new code or link (60 seconds after the last one)
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/resend
+Content-Type: application/json
+
+{
+  "attemptId": "replace-with-attempt-id"
+}
+
+### Refresh the token pair (uses the refresh_token cookie)
+POST {{HttpsHostAddress}}/auth/refresh
+
+### Sign out
+POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/logout
+
 ###
+
+# Cookies are `Secure`. Over plain HTTP, clients other than browsers on `localhost` may not send them back; use `--launch-profile https` and `https://localhost:7135` for refresh.

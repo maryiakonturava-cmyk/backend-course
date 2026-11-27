@@ -318,3 +318,21 @@ Coverage target: at least 80%, measured with the existing `coverlet.collector`.
 3. **Email challenge:** `login_challenges` migration, OTP, magic link, confirm, resend.
 4. **Browser protection:** CSRF, CORS, HTTPS guard.
 5. **Audit and docs:** `AuthAudit` events, OpenAPI, README, `.http`, `CLAUDE.md`.
+
+## Changes made during planning
+
+- Sign-in emails go through a new `ILoginEmailSender`; `IEmailSender` is unchanged.
+- IP permits are configurable (`Login:LoginPermitPerMinute`, `Login:RefreshPermitPerMinute`, default 30).
+- The HTTPS guard and HSTS run outside Development only; Compose and the `.http` samples use plain HTTP locally.
+- The 429 for exhausted OTP entries has no `Retry-After`; the client signs in again.
+- `LoginChallenge` audit outcomes also include `rejected` and `cooldown`.
+- `EmailDeliveryException` is not mapped by the exception handler; login and resend handle SMTP failure themselves.
+- `Jwt:Issuer` and `Jwt:Audience` live in `appsettings.json`; only the four keys are secret.
+- The IP rate limiter runs before model validation, so malformed requests count toward the 30 per minute.
+- The failed-login limiter reserves a slot before BCrypt and releases it on success or outage, so concurrent guesses cannot exceed 5.
+- The access-cookie handler skips endpoints without `[Authorize]`, so anonymous routes (logout, health) never query users and keep working during a database outage.
+- Confirm and resend return two 400 shapes: `ValidationProblemDetails` for a malformed body and `ErrorResponse` `invalid_challenge` for a rejected challenge. `docs/openapi.yaml` documents both.
+- `too_many_requests` has two fixed messages: one for the IP and failed-login limits, one for exhausted OTP entries.
+- `LoginChallenge` audit also emits `cooldown` when a resend comes inside the 60-second window.
+- EF Core command logs are at Warning, and JSON input-formatter messages are not echoed in 400 responses.
+- Forwarded headers trust only loopback proxies (the .NET default). A TLS proxy on another host needs its address in `KnownProxies` or `KnownIPNetworks`; clearing them would let clients spoof their IP and scheme.

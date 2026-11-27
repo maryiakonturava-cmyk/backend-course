@@ -146,4 +146,27 @@ public sealed class DirectLoginTests(RegistrationTestFactory factory) : IClassFi
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.True(response.Headers.RetryAfter is not null);
     }
+
+    [Fact]
+    public async Task LoginEndpoints_AppearInOpenApiWithTheirStatuses()
+    {
+        using var client = CreateClient(factory);
+        using var response = await client.GetAsync("/openapi/v1.json");
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var paths = document.RootElement.GetProperty("paths");
+
+        void AssertCodes(string path, params string[] expected)
+        {
+            var actual = paths.GetProperty(path).GetProperty("post").GetProperty("responses")
+                .EnumerateObject().Select(item => item.Name).ToHashSet(StringComparer.Ordinal);
+            Assert.Subset(expected.ToHashSet(StringComparer.Ordinal), actual);
+        }
+
+        AssertCodes("/auth/login", "202", "204", "400", "401", "403", "429", "503");
+        AssertCodes("/auth/login/confirm", "204", "400", "401", "403", "429", "503");
+        AssertCodes("/auth/login/resend", "202", "400", "401", "403", "429", "503");
+        AssertCodes("/auth/refresh", "204", "401", "403", "429", "503");
+        AssertCodes("/auth/logout", "204", "403");
+    }
 }
