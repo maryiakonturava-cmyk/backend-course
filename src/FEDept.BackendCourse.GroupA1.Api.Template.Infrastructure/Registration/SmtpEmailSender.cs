@@ -1,3 +1,4 @@
+using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.Extensions.Options;
@@ -5,13 +6,19 @@ using MimeKit;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 
-public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSender
+public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSender, ILoginEmailSender
 {
     public Task SendOtpAsync(string email, string code, CancellationToken ct) =>
         SendAsync(email, "Registration verification code", $"Your verification code is {code}.", ct);
 
     public Task SendMagicLinkAsync(string email, string link, CancellationToken ct) =>
         SendAsync(email, "Confirm your registration", $"Open this link to confirm your registration: {link}", ct);
+
+    public Task SendLoginOtpAsync(string email, string code, CancellationToken ct) =>
+        SendAsync(email, "Sign-in code", $"Your sign-in code is {code}. It expires in 10 minutes.", ct);
+
+    public Task SendLoginMagicLinkAsync(string email, string link, CancellationToken ct) =>
+        SendAsync(email, "Confirm your sign-in", $"Open this link to finish signing in. It expires in 10 minutes: {link}", ct);
 
     private async Task SendAsync(string email, string subject, string text, CancellationToken ct)
     {

@@ -1,0 +1,54 @@
+using System;
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Migrations
+{
+    /// <inheritdoc />
+    public partial class LoginChallenges : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.CreateTable(
+                name: "login_challenges",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    method = table.Column<string>(type: "text", nullable: false),
+                    secret_hash = table.Column<string>(type: "text", nullable: false),
+                    last_sent_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    attempts = table.Column<int>(type: "integer", nullable: false),
+                    consumed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    consumed_reason = table.Column<string>(type: "text", nullable: true),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_login_challenges", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_login_challenges_Users_user_id",
+                        column: x => x.user_id,
+                        principalTable: "Users",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_login_challenges_user_id",
+                table: "login_challenges",
+                column: "user_id",
+                unique: true,
+                filter: "\"consumed_at\" IS NULL");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "login_challenges");
+        }
+    }
+}

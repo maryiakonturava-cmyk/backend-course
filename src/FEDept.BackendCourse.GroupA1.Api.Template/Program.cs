@@ -82,7 +82,9 @@ builder.Services.AddAuthorization();
 builder.Services.AddExceptionHandler<DependencyFailureHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<RegistrationService>();
-builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+builder.Services.AddSingleton<SmtpEmailSender>();
+builder.Services.AddSingleton<IEmailSender>(services => services.GetRequiredService<SmtpEmailSender>());
+builder.Services.AddSingleton<ILoginEmailSender>(services => services.GetRequiredService<SmtpEmailSender>());
 builder.Services.AddControllers();
 
 // Add services to the container.
