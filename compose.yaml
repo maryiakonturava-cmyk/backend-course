@@ -38,6 +38,11 @@ services:
       ConnectionStrings__Default: Host=db;Port=5432;Database=groupa1;Username=postgres;Password=postgres
       Smtp__Host: mailpit
       Smtp__Port: "1025"
+      # Empty keys only allow other services to start; API startup validation still fails fast.
+      Jwt__AccessSecret: ${JWT_ACCESS_SECRET:-}
+      Jwt__RefreshSecret: ${JWT_REFRESH_SECRET:-}
+      Login__ChallengeHmacKey: ${LOGIN_CHALLENGE_HMAC_KEY:-}
+      Login__AuditHmacKey: ${LOGIN_AUDIT_HMAC_KEY:-}
     ports:
       - "${API_PORT:-5117}:8080"
 

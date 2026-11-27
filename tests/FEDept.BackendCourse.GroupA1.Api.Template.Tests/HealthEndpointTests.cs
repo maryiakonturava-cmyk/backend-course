@@ -16,7 +16,13 @@ public sealed class HealthEndpointTests(WebApplicationFactory<Program> factory)
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["Database:ApplyMigrations"] = "false"
+                    ["Database:ApplyMigrations"] = "false",
+                    ["Jwt:AccessSecret"] = new string('a', 32),
+                    ["Jwt:RefreshSecret"] = new string('b', 32),
+                    ["Jwt:Issuer"] = "health-test-api",
+                    ["Jwt:Audience"] = "health-test-web",
+                    ["Login:ChallengeHmacKey"] = new string('c', 32),
+                    ["Login:AuditHmacKey"] = new string('d', 32)
                 }));
             builder.ConfigureLogging(logging => logging.ClearProviders());
         })

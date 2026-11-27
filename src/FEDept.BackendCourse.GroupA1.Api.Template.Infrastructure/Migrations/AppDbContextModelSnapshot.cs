@@ -22,6 +22,56 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication.LoginChallenge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<string>("ConsumedReason")
+                        .HasColumnType("text")
+                        .HasColumnName("consumed_reason");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("LastSentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_sent_at");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("method");
+
+                    b.Property<string>("SecretHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("secret_hash");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique()
+                        .HasFilter("\"consumed_at\" IS NULL");
+
+                    b.ToTable("login_challenges", (string)null);
+                });
+
             modelBuilder.Entity("FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration.RegistrationChallenge", b =>
                 {
                     b.Property<Guid>("Id")
@@ -98,6 +148,15 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication.LoginChallenge", b =>
+                {
+                    b.HasOne("FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration.RegistrationChallenge", b =>

@@ -1,9 +1,9 @@
 openapi: 3.1.1
 info:
-  title: Registration API
+  title: Registration and Authentication API
   version: 1.0.0
   description: >-
-    HTTP contract for the application's health and account-registration endpoints.
+    HTTP contract for the application's health, account-registration and sign-in endpoints.
     Registration confirmation is controlled by server configuration.
 servers:
   - url: http://localhost:{port}
@@ -15,6 +15,7 @@ servers:
 tags:
   - name: Health
   - name: Registration
+  - name: Authentication
 paths:
   /health:
     get:
@@ -32,8 +33,7 @@ paths:
       description: >-
         Creates an active account when confirmation is disabled, or a pending account
         and sends an OTP or a magic link when confirmation is enabled. A duplicate email returns
-        409 without account details. The default rate limit is 5 requests per client
-        IP per minute; server configuration can change the permit count.
+        409 without account details.
       requestBody:
         required: true
         content:
@@ -69,8 +69,7 @@ paths:
                 expiresInSeconds: 600
                 resendAfterSeconds: 60
         '400':
-          $ref: '#/components/responses/ValidationError'
-          description: Некорректный email или пароль не проходит политику.
+          $ref: '#/components/responses/RegistrationBadRequest'
         '409':
           description: Email уже зарегистрирован или ожидает подтверждения.
           content:
@@ -81,8 +80,8 @@ paths:
                 type: https://tools.ietf.org/html/rfc9110#section-15.5.10
                 title: Conflict
                 status: 409
-        '429':
-          $ref: '#/components/responses/RateLimited'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
         '503':
           description: Письмо не отправлено. Запись pending и попытка подтверждения сохранены.
           content:
@@ -98,8 +97,7 @@ paths:
         Sends a new OTP or magic link for a pending account, using the method the attempt
         was issued with (not the current server setting). The previous code or link stops
         working. A successful resend resets expiry to 600 seconds and the failed-confirmation
-        count to zero. The default rate limit is 5 requests per client IP per minute; the per-email
-        resend cooldown is 60 seconds. Server configuration can change the permit count.
+        count to zero. The per-email resend cooldown is 60 seconds.
       requestBody:
         required: true
         content:
@@ -116,8 +114,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConfirmationRequiredResponse'
         '400':
-          $ref: '#/components/responses/ValidationError'
-          description: Некорректный email.
+          $ref: '#/components/responses/RegistrationBadRequest'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
         '404':
           description: Ожидающая регистрация для этого email не найдена.
           content:
@@ -125,10 +124,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: >-
-            Повторная отправка раньше чем через 60 секунд или слишком частая регистрация.
-            Ответ по cooldown содержит ProblemDetails; отказ лимитера по IP может быть без тела.
-            По умолчанию лимит составляет 5 запросов в минуту.
+          description: Resend requested during the 60-second cooldown.
           content:
             application/problem+json:
               schema:
@@ -177,43 +173,353 @@ paths:
                 email: user@example.com
                 status: active
         '400':
-          description: >-
-            Неверный или просроченный код подтверждения; попытка не найдена или уже
-            погашена. Также возвращается при ошибках валидации запроса.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-              examples:
-                invalidConfirmation:
-                  summary: Invalid, expired, or consumed attempt
-                  value:
-                    type: https://tools.ietf.org/html/rfc9110#section-15.5.1
-                    title: Bad Request
-                    status: 400
+          $ref: '#/components/responses/RegistrationBadRequest'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
         '429':
-          description: Исчерпаны попытки ввода кода.
+          description: Exhausted OTP attempts return ProblemDetails; IP limiter rejections return RetryAfterResponse.
+          headers:
+            Retry-After:
+              description: IP limit only.
+              schema:
+                type: integer
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryAfterResponse'
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Sign in with email and password
+      description: >-
+        Signs in directly (204 with access_token and refresh_token cookies) or, when the server
+        enables sign-in confirmation, sends an OTP or a magic link and returns 202. Unknown email,
+        wrong password and any non-active status return the same 401. The IP limit defaults to 30
+        requests per minute; failed checks are limited to 5 per email and IP per 15 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '204':
+          description: Signed in. Sets both cookies; no body.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookies'
+        '202':
+          description: Confirmation required; the secret was sent by email only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginChallengeResponse'
+        '400':
+          $ref: '#/components/responses/LoginBadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
+        '429':
+          $ref: '#/components/responses/RetryAfter'
+        '503':
+          description: Database, token signing or SMTP unavailable. SMTP failure keeps the attempt and returns its ID.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/LoginChallengeFailedResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+  /auth/login/confirm:
+    post:
+      tags: [Authentication]
+      operationId: confirmLogin
+      summary: Confirm sign-in with an OTP or a magic-link token
+      description: >-
+        OTP allows 5 entries; the fifth incorrect entry consumes the attempt and the next one returns 429.
+        A magic-link page reads the token from the URL fragment and posts it here; GET never confirms.
+        A malformed JSON body returns ValidationProblemDetails without echoing input; rejected challenges
+        return ErrorResponse with invalid_challenge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginConfirmRequest'
+      responses:
+        '204':
+          description: Signed in. Sets both cookies; no body.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookies'
+        '400':
+          $ref: '#/components/responses/AuthenticationBadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
+        '429':
+          description: All 5 OTP entries were used. No Retry-After header; sign in again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: too_many_requests
+                message: Too many incorrect codes. Sign in again.
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/login/resend:
+    post:
+      tags: [Authentication]
+      operationId: resendLogin
+      summary: Send a new code or link for an attempt
+      description: >-
+        Allowed 60 seconds after the last send, also after expiry. Keeps the attempt's method,
+        replaces the secret and resets the OTP counter. Malformed JSON returns ValidationProblemDetails
+        without echoing input; rejected challenges return ErrorResponse with invalid_challenge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginResendRequest'
+      responses:
+        '202':
+          description: New secret sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResendResponse'
+        '400':
+          $ref: '#/components/responses/AuthenticationBadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
+        '429':
+          description: Cooldown has Retry-After; exhausted OTP entries do not.
+          headers:
+            Retry-After:
+              description: Cooldown only; exhausted attempts omit this header.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/RetryAfterResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                cooldown:
+                  value:
+                    code: too_many_requests
+                    message: Too many requests. Try again later.
+                    retryAfterSeconds: 60
+                exhausted:
+                  value:
+                    code: too_many_requests
+                    message: Too many incorrect codes. Sign in again.
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      operationId: refreshSession
+      summary: Issue a new token pair from the refresh cookie
+      description: >-
+        Reads only the refresh_token cookie. The used refresh token is not revoked and stays valid
+        until its own exp. The rate limit defaults to 30 requests per IP per minute.
+      responses:
+        '204':
+          description: New pair set in both cookies; no body.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookies'
+        '400':
+          $ref: '#/components/responses/HttpsRequired'
+        '401':
+          $ref: '#/components/responses/InvalidSession'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
+        '429':
+          $ref: '#/components/responses/RetryAfter'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Clear both session cookies
+      description: Needs no valid token. Does not revoke copies of the refresh token on other devices.
+      responses:
+        '204':
+          description: Both cookies cleared with empty values and Max-Age=0; no body.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedSessionCookies'
+        '400':
+          $ref: '#/components/responses/HttpsRequired'
+        '403':
+          $ref: '#/components/responses/CsrfRejected'
 components:
+  headers:
+    SessionCookies:
+      description: >-
+        access_token (HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=900) and
+        refresh_token (HttpOnly; Secure; SameSite=Strict; Path=/auth/refresh; Max-Age=2592000), no Domain.
+        A cross-site frontend configuration uses SameSite=None.
+      schema:
+        type: string
+    ClearedSessionCookies:
+      description: >-
+        Clears both cookies with an empty value and Max-Age=0. Each keeps its original Path
+        (access_token /, refresh_token /auth/refresh) and configured SameSite value.
+      schema:
+        type: string
   responses:
-    ValidationError:
-      description: Некорректные данные запроса.
+    RegistrationBadRequest:
+      description: >-
+        Invalid registration bodies or challenges return ProblemDetails or ValidationProblemDetails;
+        plain HTTP outside Development returns ErrorResponse with https_required.
       content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: https_required
+            message: Use HTTPS.
+        application/problem+json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ProblemDetails'
+              - $ref: '#/components/schemas/ValidationProblem'
+          examples:
+            invalidChallenge:
+              summary: Invalid, expired, or consumed attempt
+              value:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                title: Bad Request
+                status: 400
+            invalidBody:
+              summary: Invalid request body
+              value:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                title: One or more validation errors occurred.
+                status: 400
+                errors: {}
+    InvalidCredentials:
+      description: Unknown email, wrong password or inactive account; one identical response.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: invalid_credentials
+            message: Email or password is incorrect.
+    InvalidSession:
+      description: Missing, invalid or expired token, wrong token type, or inactive user.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: invalid_session
+            message: The session is missing or no longer valid.
+    AuthenticationBadRequest:
+      description: >-
+        Malformed or invalid body returns ValidationProblemDetails without echoing input;
+        rejected challenges return ErrorResponse with invalid_challenge. In non-Development
+        environments, plain HTTP auth requests return https_required before the body is read.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidChallenge:
+              value:
+                code: invalid_challenge
+                message: The code or link is invalid or expired.
+            httpsRequired:
+              value:
+                code: https_required
+                message: Use HTTPS.
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ValidationProblem'
+    HttpsRequired:
+      description: Plain HTTP requests to authentication endpoints are rejected outside Development.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    const: https_required
+                  message:
+                    const: Use HTTPS.
           example:
-            type: https://tools.ietf.org/html/rfc9110#section-15.5.1
-            title: One or more validation errors occurred.
-            status: 400
-            errors:
-              password:
-                - Password must be at least 8 characters, include a letter and a digit, and use no more than 72 UTF-8 bytes.
-    RateLimited:
-      description: "Слишком частая регистрация: превышен лимит по IP (по умолчанию 5 запросов в минуту). Тело ответа отсутствует."
+            code: https_required
+            message: Use HTTPS.
+    LoginBadRequest:
+      description: Malformed or invalid body returns ValidationProblemDetails; plain HTTP returns https_required outside Development.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  code:
+                    const: https_required
+                  message:
+                    const: Use HTTPS.
+          example:
+            code: https_required
+            message: Use HTTPS.
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblem'
+    CsrfRejected:
+      description: Untrusted Origin, or a trusted cross-origin request without X-CSRF-Protection 1.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: csrf_rejected
+            message: The request origin is not allowed.
+    RetryAfter:
+      description: >-
+        IP and failed-login limit responses include Retry-After and retryAfterSeconds
+        with the fixed message "Too many requests. Try again later."
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RetryAfterResponse'
+          example:
+            code: too_many_requests
+            message: Too many requests. Try again later.
+            retryAfterSeconds: 60
+    ServiceUnavailable:
+      description: Database, token signing or SMTP unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: service_unavailable
+            message: The service is temporarily unavailable. Try again later.
   schemas:
     RegisterRequest:
       type: object
@@ -332,3 +638,111 @@ components:
                 type: array
                 items:
                   type: string
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Trimmed and lowercased by the server.
+        password:
+          type: string
+          description: Used exactly as sent.
+    LoginConfirmRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [attemptId, code]
+          properties:
+            attemptId:
+              type: string
+              format: uuid
+            code:
+              type: string
+              pattern: '^[0-9]{6}$'
+        - type: object
+          additionalProperties: false
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: '{attemptId}.{secret} from the magic-link URL fragment.'
+              pattern: '^[0-9a-fA-F-]{36}\.[A-Za-z0-9_-]{43}$'
+    LoginResendRequest:
+      type: object
+      required: [attemptId]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+    LoginChallengeResponse:
+      type: object
+      required: [confirmationRequired, method, attemptId, expiresInSeconds, resendAfterSeconds]
+      properties:
+        confirmationRequired:
+          type: boolean
+          const: true
+        method:
+          type: string
+          enum: [otp, magic_link]
+        attemptId:
+          type: string
+          format: uuid
+        expiresInSeconds:
+          type: integer
+          const: 600
+        resendAfterSeconds:
+          type: integer
+          const: 60
+    LoginChallengeFailedResponse:
+      type: object
+      required: [confirmationRequired, method, attemptId, retryAfterSeconds]
+      properties:
+        confirmationRequired:
+          type: boolean
+          const: true
+        method:
+          type: string
+          enum: [otp, magic_link]
+        attemptId:
+          type: string
+          format: uuid
+        retryAfterSeconds:
+          type: integer
+    LoginResendResponse:
+      type: object
+      required: [method, attemptId, expiresInSeconds, resendAfterSeconds]
+      properties:
+        method:
+          type: string
+          enum: [otp, magic_link]
+        attemptId:
+          type: string
+          format: uuid
+        expiresInSeconds:
+          type: integer
+          const: 600
+        resendAfterSeconds:
+          type: integer
+          const: 60
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid_credentials, invalid_session, invalid_challenge, too_many_requests, csrf_rejected, https_required, service_unavailable]
+        message:
+          type: string
+    RetryAfterResponse:
+      type: object
+      required: [code, message, retryAfterSeconds]
+      properties:
+        code:
+          type: string
+          const: too_many_requests
+        message:
+          type: string
+        retryAfterSeconds:
+          type: integer
