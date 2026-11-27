@@ -4667,6 +4667,8 @@ Add a section at the end of `docs/superpowers/specs/2026-11-26-login-authenticat
 - The access-cookie handler skips endpoints without `[Authorize]`, so anonymous routes (logout, health) never query users and keep working during a database outage.
 - Confirm and resend return two 400 shapes: `ValidationProblemDetails` for a malformed body and `ErrorResponse` `invalid_challenge` for a rejected challenge. `docs/openapi.yaml` documents both.
 - `too_many_requests` has two fixed messages: one for the IP and failed-login limits, one for exhausted OTP entries.
+- `LoginChallenge` audit also emits `cooldown` when a resend comes inside the 60-second window.
+- EF Core command logs are at Warning, and JSON input-formatter messages are not echoed in 400 responses.
 - Forwarded headers trust only loopback proxies (the .NET default). A TLS proxy on another host needs its address in `KnownProxies` or `KnownIPNetworks`; clearing them would let clients spoof their IP and scheme.
 ```
 
