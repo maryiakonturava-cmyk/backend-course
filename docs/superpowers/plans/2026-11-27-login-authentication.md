@@ -4662,6 +4662,8 @@ Add a section at the end of `docs/superpowers/specs/2026-11-26-login-authenticat
 - `LoginChallenge` audit outcomes also include `rejected` and `cooldown`.
 - `EmailDeliveryException` is not mapped by the exception handler; login and resend handle SMTP failure themselves.
 - `Jwt:Issuer` and `Jwt:Audience` live in `appsettings.json`; only the four keys are secret.
+- The IP rate limiter runs before model validation, so malformed requests count toward the 30 per minute.
+- The failed-login limiter reserves a slot before BCrypt and releases it on success or outage, so concurrent guesses cannot exceed 5.
 ```
 
 - [ ] **Step 9: Final verification**
