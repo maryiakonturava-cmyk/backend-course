@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 using static FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth.AuthTestKit;
@@ -26,6 +27,94 @@ public sealed class SessionTests(RegistrationTestFactory factory) : IClassFixtur
         Assert.Empty(SetCookies(response));
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("invalid_session", body.GetProperty("code").GetString());
+    }
+
+    private WebApplicationFactory<Program> WithProtectedRoute() =>
+        factory.WithSettings(new Dictionary<string, string?>(), services =>
+            services.AddControllers().AddApplicationPart(typeof(ProtectedTestController).Assembly));
+
+    private static Task<HttpResponseMessage> GetProtectedAsync(HttpClient client, string? cookie)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, "/test/protected");
+        if (cookie is not null)
+        {
+            request.Headers.Add("Cookie", cookie);
+        }
+
+        return client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Access_ValidCookie_PassesOnlyTheUserId()
+    {
+        using var app = WithProtectedRoute();
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        var userId = await CreateUserAsync(app.Services, email);
+        using var login = await LoginAsync(client, email);
+
+        using var response = await GetProtectedAsync(client, $"access_token={CookieValue(login, "access_token")}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(userId.ToString(), body.GetProperty("userId").GetString());
+    }
+
+    [Fact]
+    public async Task Access_MissingCookie_Returns401()
+    {
+        using var app = WithProtectedRoute();
+        using var client = CreateClient(app);
+
+        using var response = await GetProtectedAsync(client, null);
+
+        await AssertInvalidSessionAsync(response);
+    }
+
+    [Fact]
+    public async Task Access_RefreshTokenAsAccess_Returns401()
+    {
+        using var app = WithProtectedRoute();
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        await CreateUserAsync(app.Services, email);
+        using var login = await LoginAsync(client, email);
+
+        using var response = await GetProtectedAsync(client, $"access_token={CookieValue(login, "refresh_token")}");
+
+        await AssertInvalidSessionAsync(response);
+    }
+
+    [Fact]
+    public async Task Access_ExpiredToken_Returns401()
+    {
+        using var app = WithProtectedRoute();
+        using var client = CreateClient(app);
+        var userId = await CreateUserAsync(app.Services, NewEmail());
+        var expired = app.Services.GetRequiredService<JwtTokenService>().Issue(userId, DateTimeOffset.UtcNow.AddMinutes(-16));
+
+        using var response = await GetProtectedAsync(client, $"access_token={expired.AccessToken}");
+
+        await AssertInvalidSessionAsync(response);
+    }
+
+    [Theory]
+    [InlineData(UserStatus.Pending)]
+    [InlineData(UserStatus.Blocked)]
+    [InlineData(UserStatus.Deleting)]
+    [InlineData(UserStatus.Deleted)]
+    public async Task Access_InactiveUser_Returns401(UserStatus status)
+    {
+        using var app = WithProtectedRoute();
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        var userId = await CreateUserAsync(app.Services, email);
+        using var login = await LoginAsync(client, email);
+        await SetStatusAsync(app.Services, userId, status);
+
+        using var response = await GetProtectedAsync(client, $"access_token={CookieValue(login, "access_token")}");
+
+        await AssertInvalidSessionAsync(response);
     }
 
     [Fact]
@@ -61,6 +150,17 @@ public sealed class SessionTests(RegistrationTestFactory factory) : IClassFixtur
         using var client = CreateClient(factory);
 
         using var response = await PostWithCookieAsync(client, "/auth/refresh", null);
+
+        await AssertInvalidSessionAsync(response);
+    }
+
+    [Fact]
+    public async Task Refresh_ValidTokenForMissingUser_Returns401()
+    {
+        using var client = CreateClient(factory);
+        var token = factory.Services.GetRequiredService<JwtTokenService>().Issue(Guid.NewGuid()).RefreshToken;
+
+        using var response = await PostWithCookieAsync(client, "/auth/refresh", $"refresh_token={token}");
 
         await AssertInvalidSessionAsync(response);
     }
@@ -180,6 +280,7 @@ public sealed class SessionTests(RegistrationTestFactory factory) : IClassFixtur
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, login.StatusCode);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, refresh.StatusCode);
+        Assert.Empty(SetCookies(login));
         Assert.Empty(SetCookies(refresh));
     }
 }

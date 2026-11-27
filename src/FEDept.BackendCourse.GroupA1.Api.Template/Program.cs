@@ -5,6 +5,7 @@ using FEDept.BackendCourse.GroupA1.Api.Template.Contracts;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -75,6 +76,9 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<FailedLoginLimiter>();
 builder.Services.AddSingleton<AuthCookies>();
 builder.Services.AddScoped<LoginService>();
+builder.Services.AddAuthentication(AccessCookieAuthenticationHandler.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, AccessCookieAuthenticationHandler>(AccessCookieAuthenticationHandler.SchemeName, null);
+builder.Services.AddAuthorization();
 builder.Services.AddExceptionHandler<DependencyFailureHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<RegistrationService>();
@@ -108,6 +112,8 @@ app.UseExceptionHandler(new ExceptionHandlerOptions { SuppressDiagnosticsCallbac
 app.UseHttpsRedirection();
 app.UseRouting();
 app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 
