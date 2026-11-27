@@ -4664,6 +4664,7 @@ Add a section at the end of `docs/superpowers/specs/2026-11-26-login-authenticat
 - `Jwt:Issuer` and `Jwt:Audience` live in `appsettings.json`; only the four keys are secret.
 - The IP rate limiter runs before model validation, so malformed requests count toward the 30 per minute.
 - The failed-login limiter reserves a slot before BCrypt and releases it on success or outage, so concurrent guesses cannot exceed 5.
+- The access-cookie handler skips endpoints without `[Authorize]`, so anonymous routes (logout, health) never query users and keep working during a database outage.
 ```
 
 - [ ] **Step 9: Final verification**
