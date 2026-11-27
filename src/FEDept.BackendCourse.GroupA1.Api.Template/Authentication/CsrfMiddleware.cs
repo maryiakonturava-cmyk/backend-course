@@ -11,7 +11,11 @@ public sealed class CsrfMiddleware(RequestDelegate next, IOptions<FrontendOption
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (HttpMethods.IsPost(context.Request.Method) && Rejection(context.Request) is { } reason)
+        if (!HttpMethods.IsGet(context.Request.Method)
+            && !HttpMethods.IsHead(context.Request.Method)
+            && !HttpMethods.IsOptions(context.Request.Method)
+            && !HttpMethods.IsTrace(context.Request.Method)
+            && Rejection(context.Request) is { } reason)
         {
             audit.CsrfRejected(reason);
             context.Response.StatusCode = StatusCodes.Status403Forbidden;

@@ -158,6 +158,30 @@ public sealed class AuthAuditTests(RegistrationTestFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task FailedChallengeEmails_LogOnlySendFailedOutcome()
+    {
+        var (app, logs, sender) = Create(challenge: true);
+        using var _app = app;
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        await CreateUserAsync(app.Services, email);
+        sender.Fail = true;
+
+        using var login = await LoginAsync(client, email);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, login.StatusCode);
+        var attemptId = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("attemptId").GetGuid();
+        await AgeChallengeAsync(app.Services, attemptId, TimeSpan.FromSeconds(61));
+        using var resend = await client.PostAsJsonAsync("/auth/login/resend", new { attemptId });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, resend.StatusCode);
+        var attemptLines = logs.Messages.Where(line => line.Contains("EventName=LoginChallenge", StringComparison.Ordinal)
+            && line.Contains($"AttemptId={attemptId}", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(2, attemptLines.Count(line => line.Contains("Outcome=send_failed", StringComparison.Ordinal)));
+        Assert.DoesNotContain(attemptLines, line => line.Contains("Outcome=created", StringComparison.Ordinal));
+        Assert.DoesNotContain(attemptLines, line => line.Contains("Outcome=resent", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void EmailRef_IsDeterministicKeyedAndDoesNotContainEmail()
     {
         const string email = "member@example.com";

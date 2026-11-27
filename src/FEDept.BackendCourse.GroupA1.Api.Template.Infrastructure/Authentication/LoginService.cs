@@ -21,6 +21,8 @@ public sealed class LoginService(
     // prepared once; a missing account still costs one BCrypt check
     private static readonly string DummyHash = PasswordHasher.Hash(Guid.NewGuid().ToString());
 
+    public static void InitializeDummyHash() => _ = DummyHash;
+
     private SecretHasher Hasher => new(options.Value.ChallengeHmacKey);
 
     public async Task<LoginResult> LoginAsync(string email, string password, string clientIp, CancellationToken ct)
@@ -210,9 +212,14 @@ public sealed class LoginService(
             email = user.Email;
         }
 
-        audit.Challenge(userId, attemptId, challenge.Method, "resent");
         // on SMTP failure the new hash stays; the old secret is not restored
-        return await TrySendAsync(email, challenge, secret, ct)
+        var sent = await TrySendAsync(email, challenge, secret, ct);
+        if (sent)
+        {
+            audit.Challenge(userId, attemptId, challenge.Method, "resent");
+        }
+
+        return sent
             ? new LoginResendResult.Sent(challenge.Id, challenge.Method)
             : new LoginResendResult.NotSent(challenge.Id, challenge.Method);
     }
@@ -277,8 +284,13 @@ public sealed class LoginService(
             email = user.Email;
         }
 
-        audit.Challenge(userId, challenge.Id, method, "created");
-        return await TrySendAsync(email, challenge, secret, ct)
+        var sent = await TrySendAsync(email, challenge, secret, ct);
+        if (sent)
+        {
+            audit.Challenge(userId, challenge.Id, method, "created");
+        }
+
+        return sent
             ? new LoginResult.ChallengeSent(challenge.Id, method)
             : new LoginResult.ChallengeNotSent(challenge.Id, method, (int)ResendPause.TotalSeconds);
     }

@@ -382,19 +382,6 @@ components:
       schema:
         type: string
   responses:
-    ValidationError:
-      description: Некорректные данные запроса.
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/ValidationProblem'
-          example:
-            type: https://tools.ietf.org/html/rfc9110#section-15.5.1
-            title: One or more validation errors occurred.
-            status: 400
-            errors:
-              password:
-                - Password must be at least 8 characters, include a letter and a digit, and use no more than 72 UTF-8 bytes.
     RegistrationBadRequest:
       description: >-
         Invalid registration bodies or challenges return ProblemDetails or ValidationProblemDetails;
@@ -425,20 +412,6 @@ components:
                 title: One or more validation errors occurred.
                 status: 400
                 errors: {}
-    RateLimited:
-      description: Registration IP limit exceeded; default is 5 requests per minute.
-      headers:
-        Retry-After:
-          schema:
-            type: integer
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/RetryAfterResponse'
-          example:
-            code: too_many_requests
-            message: Too many requests. Try again later.
-            retryAfterSeconds: 60
     InvalidCredentials:
       description: Unknown email, wrong password or inactive account; one identical response.
       content:

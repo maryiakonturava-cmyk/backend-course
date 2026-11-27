@@ -28,7 +28,10 @@ public sealed class AccessCookieAuthenticationHandler(
     {
         // Only [Authorize] endpoints need the DB-backed check; anonymous ones must keep working during DB outages.
         var endpoint = Context.GetEndpoint();
-        if (endpoint?.Metadata.GetMetadata<IAuthorizeData>() is null
+        // FallbackPolicy is not supported.
+        if (endpoint is null
+            || (endpoint.Metadata.GetMetadata<IAuthorizeData>() is null
+                && endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is null)
             || endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
         {
             return AuthenticateResult.NoResult();

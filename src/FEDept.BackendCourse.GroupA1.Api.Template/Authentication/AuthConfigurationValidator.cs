@@ -68,6 +68,11 @@ public sealed class AuthConfigurationValidator(
             yield return "Login:MagicLinkBaseUrl must be an absolute https URL without a fragment when the magic link method is enabled.";
         }
 
+        if (frontend.CrossSite && string.IsNullOrWhiteSpace(frontend.Origin))
+        {
+            yield return "Frontend:Origin is required when Frontend:CrossSite is enabled.";
+        }
+
         if (frontend.Origin.Length > 0 && !IsOrigin(frontend.Origin))
         {
             yield return "Frontend:Origin must be an exact origin such as https://app.example.com.";

@@ -126,6 +126,14 @@ public sealed class AuthConfigurationTests
 
         Assert.Equal(!valid, errors.Any(error => error.Contains("Frontend:Origin", StringComparison.Ordinal)));
     }
+
+    [Fact]
+    public void Errors_CrossSiteRequiresOrigin()
+    {
+        var errors = AuthConfigurationValidator.Errors(Jwt(KeyA, KeyB), Login(KeyC, KeyD), new FrontendOptions { CrossSite = true }, false);
+
+        Assert.Contains(errors, error => error.Contains("Frontend:Origin", StringComparison.Ordinal));
+    }
 }
 
 public sealed class AuthConfigurationStartupTests(RegistrationTestFactory factory) : IClassFixture<RegistrationTestFactory>

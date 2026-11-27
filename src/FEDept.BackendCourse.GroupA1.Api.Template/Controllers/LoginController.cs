@@ -12,9 +12,6 @@ namespace FEDept.BackendCourse.GroupA1.Api.Template.Controllers;
 [Route("auth")]
 public sealed class LoginController(LoginService loginService, AuthCookies cookies, AuthAudit audit) : ControllerBase
 {
-    private const int ExpiresInSeconds = 600;
-    private const int ResendAfterSeconds = 60;
-
     [HttpPost("login")]
     [EnableRateLimiting("login")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -33,7 +30,8 @@ public sealed class LoginController(LoginService loginService, AuthCookies cooki
         {
             LoginResult.SignedIn signedIn => SignedIn(signedIn.Tokens),
             LoginResult.ChallengeSent sent => Accepted(new LoginChallengeResponse(
-                true, sent.Method.ToContractName(), sent.AttemptId, ExpiresInSeconds, ResendAfterSeconds)),
+                true, sent.Method.ToContractName(), sent.AttemptId,
+                (int)LoginService.ChallengeLifetime.TotalSeconds, (int)LoginService.ResendPause.TotalSeconds)),
             LoginResult.ChallengeNotSent notSent => StatusCode(StatusCodes.Status503ServiceUnavailable,
                 new LoginChallengeFailedResponse(true, notSent.Method.ToContractName(), notSent.AttemptId, notSent.RetryAfterSeconds)),
             LoginResult.InvalidCredentials => Unauthorized(ErrorResponses.InvalidCredentials),
@@ -79,7 +77,8 @@ public sealed class LoginController(LoginService loginService, AuthCookies cooki
         return result switch
         {
             LoginResendResult.Sent sent => Accepted(new LoginResendResponse(
-                sent.Method.ToContractName(), sent.AttemptId, ExpiresInSeconds, ResendAfterSeconds)),
+                sent.Method.ToContractName(), sent.AttemptId,
+                (int)LoginService.ChallengeLifetime.TotalSeconds, (int)LoginService.ResendPause.TotalSeconds)),
             LoginResendResult.NotSent => StatusCode(StatusCodes.Status503ServiceUnavailable, ErrorResponses.ServiceUnavailable),
             LoginResendResult.TooSoon tooSoon => TooManyRequests(tooSoon.RetryAfterSeconds),
             LoginResendResult.Invalid => BadRequest(ErrorResponses.InvalidChallenge),

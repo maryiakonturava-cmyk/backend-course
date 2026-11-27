@@ -6,7 +6,7 @@ GET {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/health
 ###
 
 ### Confirm registration by magic link (copy the token from the link in Mailpit, http://localhost:8025)
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/register/confirm
+POST {{HttpsHostAddress}}/auth/register/confirm
 Content-Type: application/json
 
 {
@@ -14,7 +14,7 @@ Content-Type: application/json
 }
 
 ### Sign in (cookies are kept by the client between requests)
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login
+POST {{HttpsHostAddress}}/auth/login
 Content-Type: application/json
 
 {
@@ -23,7 +23,7 @@ Content-Type: application/json
 }
 
 ### Confirm sign-in with the OTP from Mailpit (http://localhost:8025)
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/confirm
+POST {{HttpsHostAddress}}/auth/login/confirm
 Content-Type: application/json
 
 {
@@ -32,7 +32,7 @@ Content-Type: application/json
 }
 
 ### Confirm sign-in with the token after #token= in the magic link
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/confirm
+POST {{HttpsHostAddress}}/auth/login/confirm
 Content-Type: application/json
 
 {
@@ -40,7 +40,7 @@ Content-Type: application/json
 }
 
 ### Send a new code or link (60 seconds after the last one)
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/login/resend
+POST {{HttpsHostAddress}}/auth/login/resend
 Content-Type: application/json
 
 {
@@ -51,7 +51,7 @@ Content-Type: application/json
 POST {{HttpsHostAddress}}/auth/refresh
 
 ### Sign out
-POST {{FEDept.BackendCourse.GroupA1.Api.Template_HostAddress}}/auth/logout
+POST {{HttpsHostAddress}}/auth/logout
 
 ###
 

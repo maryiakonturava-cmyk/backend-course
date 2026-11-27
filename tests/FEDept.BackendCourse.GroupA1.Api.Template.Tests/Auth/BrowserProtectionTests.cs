@@ -1,7 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using FEDept.BackendCourse.GroupA1.Api.Template.Authentication;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
 using static FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth.AuthTestKit;
@@ -107,6 +112,22 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
         await AssertCsrfRejectedAsync(response);
     }
 
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    public async Task UnsafeMethod_FromForeignOrigin_Returns403(string method)
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+        using var request = new HttpRequestMessage(new HttpMethod(method), "/auth/logout");
+        request.Headers.Add("Origin", "https://evil.example");
+
+        using var response = await client.SendAsync(request);
+
+        await AssertCsrfRejectedAsync(response);
+    }
+
     [Fact]
     public async Task Post_FromTrustedOriginWithHeader_PassesWithCorsHeaders()
     {
@@ -143,6 +164,30 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
         Assert.Equal("true", Assert.Single(trusted.Headers.GetValues("Access-Control-Allow-Credentials")));
         Assert.Contains("x-csrf-protection", string.Join(",", trusted.Headers.GetValues("Access-Control-Allow-Headers")), StringComparison.OrdinalIgnoreCase);
         Assert.False(foreign.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
+    [Fact]
+    public async Task AccessCookieHandler_AuthenticatesAuthorizationPolicyMetadata()
+    {
+        using var app = factory.WithSettings(new Dictionary<string, string?> { ["Login:ConfirmationEnabled"] = "false" });
+        using var client = CreateClient(app);
+        var email = NewEmail();
+        await CreateUserAsync(app.Services, email);
+        using var login = await LoginAsync(client, email);
+        var access = CookieValue(login, "access_token");
+        using var scope = app.Services.CreateScope();
+        var context = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
+        context.Request.Scheme = "https";
+        context.Request.Headers.Cookie = $"access_token={access}";
+        var policy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+        context.SetEndpoint(new Endpoint(_ => Task.CompletedTask, new EndpointMetadataCollection(policy), "policy endpoint"));
+        var handler = ActivatorUtilities.CreateInstance<AccessCookieAuthenticationHandler>(scope.ServiceProvider);
+        await handler.InitializeAsync(new AuthenticationScheme(
+            AccessCookieAuthenticationHandler.SchemeName, null, typeof(AccessCookieAuthenticationHandler)), context);
+
+        var result = await handler.AuthenticateAsync();
+
+        Assert.True(result.Succeeded);
     }
 
     [Fact]

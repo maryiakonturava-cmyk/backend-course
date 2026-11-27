@@ -107,6 +107,7 @@ builder.Services.AddControllers().AddJsonOptions(options => options.AllowInputFo
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+LoginService.InitializeDummyHash();
 
 if (app.Environment.IsDevelopment() && builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
 {
@@ -120,7 +121,8 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-// shortcut: KnownProxies/KnownNetworks not configured — set before production
+app.UseExceptionHandler(new ExceptionHandlerOptions { SuppressDiagnosticsCallback = _ => false });
+// .NET trusts loopback proxies by default; set KnownIPNetworks for production proxy ranges.
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
@@ -130,7 +132,6 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
     app.UseMiddleware<HttpsOnlyMiddleware>();
 }
-app.UseExceptionHandler(new ExceptionHandlerOptions { SuppressDiagnosticsCallback = _ => false });
 app.UseHttpsRedirection();
 app.UseRouting();
 app.UseCors();
