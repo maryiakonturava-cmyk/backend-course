@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure;
+using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Authentication;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Registration;
 using FEDept.BackendCourse.GroupA1.Api.Template.Infrastructure.Users;
 using Microsoft.AspNetCore.Hosting;
@@ -8,6 +10,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace FEDept.BackendCourse.GroupA1.Api.Template.Tests.Auth;
@@ -32,6 +36,41 @@ internal static class AuthTestKit
                 builder.ConfigureTestServices(services);
             }
         });
+
+    public static WebApplicationFactory<Program> WithChallenge(
+        this RegistrationTestFactory factory, string method, CapturingLoginEmailSender sender) =>
+        factory.WithSettings(
+            new Dictionary<string, string?>
+            {
+                ["Login:ConfirmationEnabled"] = "true",
+                ["Login:ConfirmationMethod"] = method
+            },
+            services =>
+            {
+                services.RemoveAll<ILoginEmailSender>();
+                services.AddSingleton<ILoginEmailSender>(sender);
+            });
+
+    public static async Task<LoginChallenge> GetChallengeAsync(IServiceProvider services, Guid attemptId)
+    {
+        using var scope = services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<AppDbContext>().LoginChallenges
+            .AsNoTracking()
+            .SingleAsync(challenge => challenge.Id == attemptId);
+    }
+
+    // moves the send time back instead of waiting for the 60 s pause or the 10 min TTL
+    public static async Task AgeChallengeAsync(IServiceProvider services, Guid attemptId, TimeSpan by)
+    {
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var challenge = await db.LoginChallenges.SingleAsync(item => item.Id == attemptId);
+        challenge.LastSentAt -= by;
+        await db.SaveChangesAsync();
+    }
+
+    public static string ChallengeHash(IServiceProvider services, string secret) =>
+        new SecretHasher(services.GetRequiredService<IOptions<LoginOptions>>().Value.ChallengeHmacKey).Hash(secret);
 
     public static HttpClient CreateClient(WebApplicationFactory<Program> app, string baseAddress = "https://localhost") =>
         app.CreateClient(new WebApplicationFactoryClientOptions
@@ -113,5 +152,31 @@ internal static class AuthTestKit
             Assert.Contains($"samesite={sameSite}", header, StringComparison.Ordinal);
             Assert.DoesNotContain("domain=", header, StringComparison.Ordinal);
         }
+    }
+}
+
+public sealed class CapturingLoginEmailSender : ILoginEmailSender
+{
+    public ConcurrentQueue<(string Email, string Secret)> Sent { get; } = new();
+
+    public bool Fail { get; set; }
+
+    public Task SendLoginOtpAsync(string email, string code, CancellationToken ct) => Capture(email, code);
+
+    public Task SendLoginMagicLinkAsync(string email, string link, CancellationToken ct) => Capture(email, link);
+
+    public string LastFor(string email) => Sent.Last(item => item.Email == email).Secret;
+
+    public int CountFor(string email) => Sent.Count(item => item.Email == email);
+
+    private Task Capture(string email, string secret)
+    {
+        if (Fail)
+        {
+            throw new InvalidOperationException("SMTP rejected the message.");
+        }
+
+        Sent.Enqueue((email, secret));
+        return Task.CompletedTask;
     }
 }
