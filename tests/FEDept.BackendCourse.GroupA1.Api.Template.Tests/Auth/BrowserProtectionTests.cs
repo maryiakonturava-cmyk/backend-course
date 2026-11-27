@@ -19,7 +19,7 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
             ["Frontend:CrossSite"] = crossSite ? "true" : "false"
         });
 
-    private static Task<HttpResponseMessage> PostAsync(HttpClient client, string path, string? origin, bool csrfHeader = false, object? body = null)
+    private static Task<HttpResponseMessage> PostAsync(HttpClient client, string path, string? origin, bool csrfHeader = false, object? body = null, string? csrfHeaderValue = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = body is null ? null : JsonContent.Create(body) };
         if (origin is not null)
@@ -27,9 +27,9 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
             request.Headers.Add("Origin", origin);
         }
 
-        if (csrfHeader)
+        if (csrfHeader || csrfHeaderValue is not null)
         {
-            request.Headers.Add("X-CSRF-Protection", "1");
+            request.Headers.Add("X-CSRF-Protection", csrfHeaderValue ?? "1");
         }
 
         return client.SendAsync(request);
@@ -51,6 +51,34 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
         using var response = await PostAsync(client, "/auth/logout", origin);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("https://sub.app.example.test")]
+    [InlineData("https://app.example.test/")]
+    [InlineData("https://APP.EXAMPLE.TEST")]
+    public async Task Post_FromNonExactOrigin_Returns403(string origin)
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        using var response = await PostAsync(client, "/auth/logout", origin, csrfHeader: true);
+
+        await AssertCsrfRejectedAsync(response);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("true")]
+    public async Task Post_FromTrustedOriginWithInvalidHeader_Returns403(string csrfValue)
+    {
+        using var app = WithFrontend();
+        using var client = CreateClient(app);
+
+        using var response = await PostAsync(client, "/auth/logout", Frontend, csrfHeaderValue: csrfValue);
+
+        await AssertCsrfRejectedAsync(response);
     }
 
     [Theory]
@@ -110,8 +138,10 @@ public sealed class BrowserProtectionTests(RegistrationTestFactory factory) : IC
         using var trusted = await client.SendAsync(Preflight(Frontend));
         using var foreign = await client.SendAsync(Preflight("https://evil.example"));
 
+        Assert.Equal(HttpStatusCode.NoContent, trusted.StatusCode);
         Assert.Equal(Frontend, Assert.Single(trusted.Headers.GetValues("Access-Control-Allow-Origin")));
         Assert.Equal("true", Assert.Single(trusted.Headers.GetValues("Access-Control-Allow-Credentials")));
+        Assert.Contains("x-csrf-protection", string.Join(",", trusted.Headers.GetValues("Access-Control-Allow-Headers")), StringComparison.OrdinalIgnoreCase);
         Assert.False(foreign.Headers.Contains("Access-Control-Allow-Origin"));
     }
 
